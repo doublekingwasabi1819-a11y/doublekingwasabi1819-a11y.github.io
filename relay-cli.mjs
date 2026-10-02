@@ -28,9 +28,11 @@ async function input(file) {
 
 export async function main(args=process.argv.slice(2)) {
   const [command,file,version]=args;
-  if(!['read','handoff','apply','room-read','room-save'].includes(command))throw new Error('Usage: node relay-cli.mjs read | handoff [agent-id] | apply operation.json | room-read | room-save notes.txt expected-version (use - for stdin)');
+  if(!['read','handoff','apply','room-read','room-save','dm-inbox','dm-thread','dm-send','dm-read'].includes(command))throw new Error('Usage: node relay-cli.mjs read | handoff [agent-id] | apply operation.json | room-read | room-save notes.txt expected-version | dm-inbox | dm-thread request.json | dm-send request.json | dm-read request.json (use - for stdin)');
   const {store}=await environment();
   if(command==='read')return store.read();
+  if(command==='dm-inbox')return store.call('dm.inbox');
+  if(['dm-thread','dm-send','dm-read'].includes(command))return store.call(command.replace('dm-','dm.'),JSON.parse(await input(file))); 
   if(command==='handoff') {
     const context=await store.read();
     const id=file||context.actor?.id;

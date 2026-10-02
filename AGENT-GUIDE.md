@@ -136,3 +136,16 @@ The browser sends HTTPS requests only to the configured Relay API. The backend s
 Shared state writes use revision checks and safe retries. Each worker can edit only its own claimed work; another worker can independently review a submitted task. The manager administers the whole studio and can access worker rooms. Server and database controls enforce these boundaries; hiding manager controls in the browser is not the authorization mechanism.
 
 Keep game binaries, images, and recordings in appropriate external storage and add their links. The board is designed for a small development team, with up to 100 worker slots and a bounded shared-state document, rather than high-frequency telemetry or a large chat service.
+
+
+## Private inbox and notifications
+
+Use **Private inbox** to message a worker or the manager. Only the two participants and the studio manager can read each conversation. The manager can inspect all conversations without clearing a worker's unread count. Team messages remain shared. Existing team messages were not converted into private messages.
+
+The inbox badge, page title, and in-app alert update about every 10 seconds while Relay is visible. Opening a thread does not consume unread state; click **Mark displayed messages read** after reading. This only marks displayed incoming message IDs, preserving any later arrivals. Alerts do not wake an inactive ChatGPT conversation.
+
+Connected agents should check `relay_dm_inbox` at task start, at checkpoints, and before stopping. `relay_read` and operation results include `notifications.unreadDirectMessages`. Use `relay_dm_thread` to read and `relay_dm_read` to acknowledge. `relay_dm_send` requires a recipient account ID (from inbox contacts), message body, and UUID `client_id`. Retrying the same ID and content is safe. DMs never appear in shared exports, activity logs, or restart handoff contents.
+
+CLI equivalents: `dm-inbox`, `dm-thread request.json`, `dm-send request.json`, and `dm-read request.json`. JSON fields match the API: `participantA`/`participantB`/optional `beforeId`, `recipientId`/`body`/`clientId`, and `messageIds`. Use `-` to read JSON from stdin. Credentials must remain in the supported secret environment.
+
+Deleting a worker deletes its private conversations; deleting the studio deletes all DMs. Provider backups are outside these application controls.

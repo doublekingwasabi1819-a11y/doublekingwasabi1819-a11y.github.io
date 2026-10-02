@@ -7,6 +7,10 @@ let configured;
 async function client(){if(!configured)configured=environment();try{return await configured;}catch(error){configured=null;throw error;}}
 const string={type:'string'};
 const definitions=[
+ ['relay_dm_inbox','Read private conversation previews, worker contacts, and your unread count. Only participants and the manager can read DMs.',{},[]],
+ ['relay_dm_thread','Read up to 50 private messages between two account IDs. Does not mark messages read.',{participant_a:string,participant_b:string,before_id:string},['participant_a','participant_b']],
+ ['relay_dm_send','Send a private message. Only sender, recipient, and manager can read it. Use the same client_id when retrying an uncertain send.',{recipient_id:string,body:string,client_id:string},['recipient_id','body','client_id']],
+ ['relay_dm_read','Mark only specified incoming messages as read after reading them. Manager inspection does not mark workers’ messages read.',{message_ids:{type:'array',items:string,maxItems:100}},['message_ids']],
  ['relay_read','Read the signed-in worker’s identity, private room, project rules, assignments and messages.',{},[]],
  ['relay_room_read','Read your own landing-room notes and version. The manager can also access worker rooms.',{},[]],
  ['relay_room_save','Save your own room notes against the version you read. Conflicting changes are rejected.',{body:string,expected_version:{type:'integer',minimum:0}},['body','expected_version']],
@@ -21,7 +25,7 @@ const definitions=[
 const content=value=>({content:[{type:'text',text:JSON.stringify(value)}]});
 
 export async function handle(msg,getClient=client) {
-  if(msg.method==='initialize')return {protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'relay-studio',version:'2.0.0'},instructions:'Read the project before acting. The server authorizes your signed-in account; role or actor fields cannot grant access. Your room is separate from the shared board and is also accessible to the manager. Save concrete checkpoints and test evidence. Do not self-review. Never put credentials in notes or messages.'};
+  if(msg.method==='initialize')return {protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'relay-studio',version:'2.1.0'},instructions:'Read the project before acting. The server authorizes your signed-in account; role or actor fields cannot grant access. Your room is separate from the shared board and is also accessible to the manager. Private messages are readable only by participants and manager. Check relay_dm_inbox at task start, checkpoints, and before stopping. Notifications appear in tool results; they cannot wake an inactive chat. Save concrete checkpoints and test evidence. Do not self-review. Never put credentials in notes or messages.'};
   if(msg.method==='ping')return {};
   if(msg.method==='tools/list')return {tools:definitions};
   if(msg.method!=='tools/call')throw Object.assign(new Error('Method not found'),{code:-32601});
@@ -33,8 +37,12 @@ export async function handle(msg,getClient=client) {
     if(name==='relay_read') {
       const context=await store.read(),s=context.state,id=context.actor?.id;
       const own=s.agents.find(agent=>agent.id===id);
-      return content({user:context.user,room:context.room,revision:s.revision,project:s.project,agent:own,tasks:s.tasks,requests:s.requests.filter(row=>row.status==='open'),memory:s.memory,messages:s.messages.slice(-60),handoff:own?handoff(s,id,store.base):null});
+      return content({user:context.user,room:context.room,notifications:context.notifications,revision:s.revision,project:s.project,agent:own,tasks:s.tasks,requests:s.requests.filter(row=>row.status==='open'),memory:s.memory,messages:s.messages.slice(-60),handoff:own?handoff(s,id,store.base):null});
     }
+    if(name==='relay_dm_inbox')return content(await store.call('dm.inbox'));
+    if(name==='relay_dm_thread')return content(await store.call('dm.thread',{participantA:a.participant_a,participantB:a.participant_b,...(a.before_id?{beforeId:a.before_id}:{})}));
+    if(name==='relay_dm_send')return content(await store.call('dm.send',{recipientId:a.recipient_id,body:a.body,clientId:a.client_id}));
+    if(name==='relay_dm_read')return content(await store.call('dm.read',{messageIds:a.message_ids}));
     if(name==='relay_room_read')return content(await store.call('room.read'));
     if(name==='relay_room_save')return content(await store.call('room.save',{body:a.body,expectedVersion:a.expected_version}));
     let type,payload;
@@ -49,7 +57,7 @@ export async function handle(msg,getClient=client) {
     }
     const id=a.operation_id||newId();
     const state=await store.mutate({id,type,payload});
-    return content({ok:true,revision:state.revision,operationId:id});
+    return content({ok:true,revision:state.revision,operationId:id,notifications:store.snapshot?.notifications});
   } catch(error){return {isError:true,content:[{type:'text',text:error.message}]};}
 }
 
