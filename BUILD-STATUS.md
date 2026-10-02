@@ -1,8 +1,9 @@
 # Relay account release status
 
 Prepared on 2026-10-02 for the existing external GitHub Pages site.
-The account release is staged on `relay-accounts`; it is not yet active on the
-public website. No real manager or worker account has been created.
+The account service is deployed in the approved free Supabase project in Canada.
+The website release is configured for that service and ready to publish.
+No real manager or worker account has been created; protected owner setup is ready.
 
 ## Implemented
 
@@ -24,18 +25,27 @@ public website. No real manager or worker account has been created.
 
 The browser could not reach the separate database-backed local preview;
 browser and real database checks were therefore performed separately.
-Production integration verification remains required after activation.
+Production database setup, worker login and room isolation were also checked
+in a transaction that rolled back all temporary accounts.
 
-## Activation remaining
+## Deployment
 
-1. Confirm creation of a free Supabase project in the connected organization.
-2. Install the schema, run security advisors, and deploy the Edge Function.
-3. Provision a random, private one-time setup code and set the public API URL.
-4. Publish the release to `main` and verify the Pages and API deployments.
-5. The owner chooses their manager name and password in the website and saves
-   the recovery code. Then they can create worker slots.
+- Supabase project: Relay Studio (`mukbnmewwoeweogmcuno`), Canada Central.
+- Account service: `https://mukbnmewwoeweogmcuno.supabase.co/functions/v1/relay`.
+- Live checks: status succeeds; protected requests without a session fail with
+  401; an unapproved browser origin fails with 403; CORS permits the exact site.
+- Database checks: anonymous and authenticated roles cannot execute the RPC;
+  the backend service role can. All private tables have RLS enabled.
+- Security advisor: no errors or warnings; five informational notices for
+  intentionally policy-free private tables. These deny all direct user access.
+  Reference: https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy
+- The owner approved the quoted $0/month project and target organization.
 
-Supabase currently quotes $0/month for the new project. Its project-creation
-workflow requires confirmation of the cost and target organization first.
+## Owner setup
+
+Open the website, choose Manager, then First time? Set up your manager account.
+Use the separately supplied private one-time setup code, choose a name,
+username and password, and save the recovery code. Then choose Add worker.
+The setup code and database keys are never stored in this repository.
 
 See README.md and AGENT-GUIDE.md for deployment and account instructions.
