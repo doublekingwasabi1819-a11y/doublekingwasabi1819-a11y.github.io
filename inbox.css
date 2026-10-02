@@ -1,0 +1,265 @@
+/* Private inbox — visual overrides only. Keep the inbox's privacy and read state intact. */
+.dm-privacy {
+  margin: 0 0 22px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.dm-layout {
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 560px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface, #fff);
+  box-shadow: 0 4px 22px rgba(29, 29, 31, .035);
+}
+
+.dm-sidebar {
+  padding: 22px 14px;
+  border-right: 1px solid var(--line);
+  background: var(--surface-subtle, #f7f8fa);
+}
+
+.dm-sidebar > .field { margin: 0 8px 18px; }
+.dm-sidebar .field-label { color: var(--text, #1d1d1f); font-size: 12px; }
+.dm-sidebar .field select {
+  min-height: 44px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--text, #1d1d1f);
+}
+.dm-sidebar .nav-label {
+  padding: 8px 10px 10px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .08em;
+}
+.dm-sidebar > .subtitle { padding: 10px; }
+
+.dm-thread-button {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  margin: 3px 0;
+  padding: 13px 12px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text, #1d1d1f);
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.dm-thread-button:hover { background: #eceff3; }
+.dm-thread-button.active {
+  border-color: rgba(0, 107, 214, .16);
+  background: #e9f2fc;
+  box-shadow: inset 3px 0 var(--blue);
+}
+.dm-thread-title {
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.dm-thread-title .nav-badge {
+  flex: none;
+  min-width: 22px;
+  margin: 0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.dm-preview {
+  margin: 5px 0 7px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.dm-thread-button time {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+#dm-thread-area {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface, #fff);
+}
+#dm-thread-area > .panel-header {
+  min-height: 78px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line);
+}
+#dm-thread-area > .panel-header h2 {
+  color: var(--text, #1d1d1f);
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+#dm-thread-area > .empty { margin: auto 0; padding: 60px 24px; }
+#dm-root .button {
+  min-height: 44px;
+  padding: 10px 15px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+#dm-root .button:focus-visible,
+.dm-thread-button:focus-visible,
+#dm-notification:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
+}
+
+.dm-message-list {
+  flex: 1;
+  min-height: 280px;
+  max-height: 560px;
+  gap: 16px;
+  padding: 26px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: #c9cdd4 transparent;
+  overscroll-behavior: contain;
+}
+.dm-message-list > .button { align-self: center; }
+.dm-bubble {
+  min-width: min(190px, 100%);
+  max-width: 86%;
+  padding: 13px 16px 12px;
+  border: 1px solid rgba(29, 29, 31, .035);
+  border-radius: 16px 16px 16px 5px;
+  background: #f0f2f5;
+  color: var(--text, #1d1d1f);
+}
+.dm-bubble.mine {
+  align-self: flex-end;
+  border-color: transparent;
+  border-radius: 16px 16px 5px 16px;
+  background: var(--blue);
+  color: #fff;
+}
+.dm-meta { gap: 6px 14px; align-items: baseline; font-size: 12px; line-height: 1.5; }
+.dm-meta strong { font-weight: 650; }
+.dm-meta time { color: #566274; font-size: 11px; }
+.dm-bubble p { margin: 8px 0 10px; font-size: 14px; line-height: 1.6; }
+.dm-bubble small {
+  display: inline-block;
+  color: #566274;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.dm-bubble.mine .dm-meta time,
+.dm-bubble.mine small { color: rgba(255, 255, 255, .94); }
+
+.dm-read-bar {
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 24px 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.dm-read-bar:has(> [hidden]):has(> span:empty) { padding-bottom: 0; }
+#dm-thread-error { color: #b4232b; overflow-wrap: anywhere; }
+#dm-thread-area .compose {
+  margin: 0;
+  padding: 22px 24px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--surface, #fff);
+}
+#dm-compose .field { margin-bottom: 0; }
+#dm-compose .field-label { margin-bottom: 9px; color: var(--text, #1d1d1f); }
+#dm-compose textarea {
+  min-height: 104px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-subtle, #f7f8fa);
+  color: var(--text, #1d1d1f);
+  font-size: 14px;
+  line-height: 1.6;
+}
+#dm-compose textarea::placeholder { color: #687485; opacity: 1; }
+#dm-thread-area .compose .actions { align-items: center; margin-top: 13px; gap: 16px; }
+#dm-compose .checkbox-caption { max-width: 440px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+#dm-compose .button.primary { flex: none; box-shadow: 0 2px 4px rgba(0, 107, 214, .12); }
+.dm-manager-note {
+  margin: 20px 24px 24px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-subtle, #f7f8fa);
+  color: var(--muted);
+}
+
+#dm-notification {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--text, #1d1d1f);
+  font-size: 13px;
+  font-weight: 550;
+  gap: 8px;
+  padding: 10px 13px;
+}
+#dm-notification:hover { background: #f1f4f8; }
+.dm-notify-count {
+  min-width: 21px;
+  margin-left: 0;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1000px) and (min-width: 761px) {
+  .dm-layout { grid-template-columns: 230px minmax(0, 1fr); }
+  .dm-sidebar { padding-inline: 10px; }
+  #dm-thread-area .compose .actions { flex-wrap: wrap; }
+  #dm-compose .button.primary { margin-left: auto; }
+}
+@media (max-width: 760px) {
+  .dm-privacy { margin-bottom: 18px; padding: 13px 15px; font-size: 12px; }
+  .dm-layout { grid-template-columns: 1fr; min-height: 0; border-radius: 14px; }
+  .dm-sidebar {
+    max-height: 290px;
+    padding: 18px 12px 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .dm-sidebar > .field { margin-bottom: 12px; }
+  .dm-sidebar .field select { font-size: 16px; }
+  .dm-thread-button { min-height: 82px; padding: 11px 12px; }
+  #dm-thread-area > .panel-header { min-height: 72px; padding: 15px 17px; }
+  .dm-message-list { min-height: 220px; max-height: 440px; padding: 20px 17px; gap: 14px; }
+  .dm-bubble { max-width: 95%; padding: 12px 14px 11px; }
+  .dm-meta { gap: 4px 10px; }
+  .dm-read-bar { padding: 0 17px 16px; }
+  #dm-thread-area .compose { padding: 18px 17px 20px; }
+  #dm-compose textarea { min-height: 112px; font-size: 16px; }
+  #dm-thread-area .compose .actions { align-items: stretch; flex-direction: column; gap: 12px; }
+  #dm-compose .button.primary { align-self: flex-end; min-width: 132px; }
+  .dm-manager-note { margin: 18px 17px 20px; }
+  #dm-notification { min-height: 44px; padding: 10px 11px; font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dm-thread-button { transition: none; }
+}
