@@ -2,7 +2,7 @@
 export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let inbox={contacts:[],threads:[],unreadCount:0},loaded=false,polling=false,selected=null,messages=[],hasMore=false,error='',generation=0;
-  const drafts=new Map();
+  const drafts=new Map(),scrollPositions=new Map();
   const paintedHTML=new WeakMap(),pendingOptions=new WeakMap();
   const key=(a,b)=>[a,b].sort().join(':');
   const person=id=>id===getUser()?.id?getUser():inbox.contacts.find(c=>c.id===id);
@@ -85,7 +85,9 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
     }catch(e){if(!current(token)||g!==generation)return;error=e.message;if(['SESSION','UNAUTHORIZED','STALE_SESSION','DELETED'].includes(e.code)){reset();onSessionError();return;}if(active())document.querySelector('#dm-load-error').textContent=e.message;}
     finally{if(g===generation)polling=false;}
   }
-  function scrollLatest(){const list=document.querySelector('#dm-messages');if(list)list.scrollTop=list.scrollHeight;}
+  function rememberScroll(list,k=draftKey()){if(list&&k)scrollPositions.set(k,{top:list.scrollTop,bottom:list.scrollHeight-list.scrollTop-list.clientHeight<64});}
+  function scrollLatest(){const list=document.querySelector('#dm-messages');if(list){list.scrollTop=list.scrollHeight;rememberScroll(list);}}
+  function restoreScroll(){const list=document.querySelector('#dm-messages'),saved=scrollPositions.get(draftKey());if(!list)return;if(saved&&!saved.bottom){list.scrollTop=saved.top;rememberScroll(list);}else scrollLatest();}
   async function loadThread(older=false,initial=false){
     if(!selected)return;const token=api.token,pair={...selected},k=draftKey(),g=generation;
     const list=document.querySelector('#dm-messages');
@@ -97,7 +99,7 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
     else if(messages.length>50){const old=new Map(messages.map(m=>[m.id,m]));r.messages.forEach(m=>old.set(m.id,m));messages=[...old.values()].sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));}
     else {messages=r.messages;hasMore=r.hasMore;}
     paintMessages();
-    if(list?.isConnected){if(older)list.scrollTop=previousTop+list.scrollHeight-previousHeight;else if(initial||atBottom)scrollLatest();}
+    if(list?.isConnected){if(older)list.scrollTop=previousTop+list.scrollHeight-previousHeight;else if(initial||atBottom)scrollLatest();rememberScroll(list,k);}
   }
   async function selectThread(t){selected={participantA:t.participantA,participantB:t.participantB};messages=[];hasMore=false;error='';paint();try{await loadThread(false,true);}catch(e){error=e.message;const el=document.querySelector('#dm-thread-error');if(el)el.textContent=error;}}
   function bindSidebar(){
@@ -106,6 +108,7 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   }
   function bind(){
     bindSidebar();const root=active();if(!root)return;
+    const list=root.querySelector('#dm-messages'),scrollKey=draftKey();if(list)list.onscroll=()=>rememberScroll(list,scrollKey);
     root.onclick=async e=>{const button=e.target.closest('[data-dm-action]');if(!button)return;const action=button.dataset.dmAction,hadFocus=document.activeElement===button,focusToken=api.token,focusGeneration=generation,focusThread=draftKey();button.disabled=true;try{
       if(action==='latest')scrollLatest();
       if(action==='refresh'){await poll();await loadThread();}
@@ -128,8 +131,8 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
     };
   }
   function render(){return `<div class="page-title"><div><div class="eyebrow">CODERCODE / STUDIO</div><h1>Private inbox</h1><p class="subtitle">${getUser()?.role==='manager'?'You can read every private conversation in your studio.':'Private conversations with your workers and manager.'}</p></div></div><div class="callout dm-privacy">Only the two participants and the studio manager can read a conversation. Unread alerts update while Relay is open.</div>${!isLive()?'<div class="empty"><h3>Sign in to use private messages</h3><p>Private inboxes are available for real worker and manager accounts.</p></div>':`<section id="dm-root" class="panel dm-layout"><aside id="dm-sidebar" class="dm-sidebar">${loaded?sidebar():'<p>Loading your inbox…</p>'}</aside><div id="dm-thread-area">${threadHTML()}</div></section><p id="dm-load-error" class="form-error" role="alert">${esc(error)}</p>`}`;}
-  function mount(){badges();if(!isLive())return;bind();if(!loaded)poll();}
-  function reset(){generation++;inbox={contacts:[],threads:[],unreadCount:0};selected=null;messages=[];hasMore=false;loaded=false;polling=false;error='';drafts.clear();badges();}
+  function mount(){badges();if(!isLive())return;bind();const select=document.querySelector('#dm-recipient'),userId=getUser()?.id;if(select)select.value=selected?.participantA===userId?selected.participantB:selected?.participantB===userId?selected.participantA:'';restoreScroll();if(!loaded)poll();}
+  function reset(){generation++;inbox={contacts:[],threads:[],unreadCount:0};selected=null;messages=[];hasMore=false;loaded=false;polling=false;error='';drafts.clear();scrollPositions.clear();badges();}
   setInterval(()=>{if(!document.hidden)poll();},10000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
   return {render,mount,reset,poll};
