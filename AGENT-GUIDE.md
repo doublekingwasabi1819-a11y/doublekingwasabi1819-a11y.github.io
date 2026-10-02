@@ -1,41 +1,69 @@
-# Relay agent connection guide
+# Relay account and agent guide
 
-Relay is an external GitHub Pages dashboard. Project state lives in a separate **private** GitHub repository, in `hub-state.json` on its default branch. No OpenAI inference is built into the website; opening the board does not start or bill model jobs.
+Relay has one manager and named worker slots. The website is an external GitHub Pages interface; the shared board, logins, and private room notes live in the account backend. A worker needs its own Relay username and password or a valid Relay session token. It does not need a GitHub board token, the manager password, or a database key.
 
-## Owner setup
+## Manager: first setup
 
-1. Create a private GitHub repository (suggested name `relay-board`) with a README. Do not enable Pages on that repository.
-2. Create a fine-grained access token limited to the private board repository, with **Contents: read and write**. This website does not require access to your other repositories.
-3. In Relay, select Connect project and enter `owner/relay-board` and the token. The token is kept only in the current tab's memory and sent only to `api.github.com`. Closing or refreshing disconnects the tab; your project remains saved on GitHub.
-4. Create the empty board, add named agents, and start their sessions. Fill in Project direction. Point Game repository at the actual game code, which is separate from the board and dashboard.
-5. Give each agent environment its own repository credential. Copy the relevant handoff from Relay into its chat. Repository membership and each token's permissions determine actual access; display names and session IDs are not security credentials.
+1. Open the published Relay site. When setup is available, enter the private one-time setup code supplied by the deployment owner.
+2. Choose your display name, login username, and manager password. Usernames use 3–40 lowercase letters, digits, dots, underscores, or hyphens and begin with a letter or digit. Passwords need at least 12 characters and at most 72 UTF-8 bytes; non-ASCII characters can use more than one byte.
+3. Save the recovery code that appears after setup. It is shown once and is needed if you forget the manager password. Keep it outside Relay.
+4. In the manager workspace, choose **Add worker**. Give the slot a display name, unique login username, password, and working role such as Builder, Tester, or Coordinator.
+5. Give that worker only its own credentials through the agent environment's secret settings or your normal private sign-in workflow. Copy its handoff into the chat to provide the project and assignment context.
+
+Setup cannot be claimed just by being the first visitor: it requires the private setup code, and only one manager account can exist. The backend clears that setup code after successful initialization. Creating a slot prepares its board identity and run; you do not need to edit JSON or GitHub repositories.
+
+## Worker: sign in and use your room
+
+Choose **Worker** on the sign-in screen and use the username and password assigned by the manager. Your landing space welcomes you by name and contains your room notes, tasks, and checkpoint. Your room is accessible to you and the manager; other worker accounts cannot read or overwrite it. Task messages and directed board messages are team-visible, so use the room for your personal working notes.
+
+A display name or role selector is not authority. The backend obtains permissions from the signed-in account, and changing request fields cannot grant manager access. The Coordinator working role can create tasks but is still a worker account.
+
+A browser session survives a page reload within its tab and expires after 24 hours. Closing the tab normally clears the browser's session storage; some browsers can restore tabs. Use **Sign out** to explicitly end your session. Passwords and recovery codes are never saved to browser session storage.
+
+## Password reset and slot management
+
+- **Forgotten manager password:** use the sign-in page's reset action, your manager username, the saved recovery code, and a new password. Recovery consumes the old code and returns a replacement that must be saved. All previous manager sessions are revoked; sign in again.
+- **Change manager password:** supply the current manager password and the new one from account settings. This signs out every current manager session.
+- **Worker password reset:** the manager chooses the worker, confirms the current manager password, and sets a new worker password. The old worker sessions are revoked. Its existing unfinished assignments stay with the replacement worker run.
+- **Disable worker:** the slot is kept but its current sessions are revoked. The manager may later enable the slot; the worker must sign in again.
+- **Delete worker:** the manager confirms their current password and types that worker's login. This deletes its account and room, revokes its sessions, and releases its unfinished tasks. A disabled historical identity remains on the shared board so previous shared work is still attributable.
+
+If you lose both the manager password and recovery code, the public reset form cannot recover the account. Recovery then requires separately authorized access to the backend deployment. Workers should ask the manager to reset their slot; they do not receive a manager recovery code.
 
 ## Node.js command-line client
 
-Use Node.js 20 or newer. Keep `relay-cli.mjs`, `github.mjs`, and `engine.mjs` together. No packages are required. Download or clone the dashboard source; never commit your environment credentials.
+Use Node.js 20 or newer. Keep `relay-cli.mjs`, `api.mjs`, and `engine.mjs` together. No packages are required.
 
-Set these through your agent environment's secret/variable settings:
+Set these through the agent environment's secret/variable settings. The API address is the account backend URL supplied with the deployment, not the GitHub Pages address:
 
 ```text
-RELAY_REPO=owner/private-board
-GITHUB_TOKEN=<your repository-scoped credential>
-RELAY_AGENT_ID=<from the handoff>
-RELAY_SESSION_ID=<from the handoff>
+RELAY_API_URL=https://YOUR-PROJECT.supabase.co/functions/v1/relay
+RELAY_USERNAME=your-worker-login
+RELAY_PASSWORD=<your worker password, supplied as an environment secret>
+RELAY_LOGIN_ROLE=worker
 ```
 
-For an owner-operated tool environment only, `RELAY_OWNER=yes` enables owner actions. All participants with repository write access can edit the entire data file directly; roles and session checks in this client coordinate trusted workers, not sandbox hostile users.
+Alternatively, provide `RELAY_API_URL` and `RELAY_SESSION_TOKEN` using a session issued by the login API. When a token is supplied, the CLI skips password sign-in. It does not print that token. Do not pass passwords or tokens as command arguments or save them in source files.
 
-Read the current board:
+Password configuration logs in once per CLI invocation. A long-running MCP bridge logs in once when its first tool is used. On expiry or reset, obtain a new session or restart the bridge with current credentials. `RELAY_OWNER`, `RELAY_AGENT_ID`, `RELAY_SESSION_ID`, `GITHUB_TOKEN`, and `RELAY_REPO` are not used for account access.
+
+Read your identity, own room, and shared project state:
 
 ```sh
 node relay-cli.mjs read
 ```
 
-Write an operation to a local JSON file, then apply it. Include a unique stable `id` for safe retries of the same operation. If omitted, the CLI generates one; preserve the returned ID for manual retries.
+Generate a handoff for your current slot:
+
+```sh
+node relay-cli.mjs handoff
+```
+
+Write a board operation to a JSON file, then apply it:
 
 ```json
 {
-  "id": "forge-charge-task-attempt-1",
+  "id": "forge-movement-claim-1",
   "type": "task.claim",
   "payload": {"taskId": "TASK-ID-FROM-BOARD"}
 }
@@ -45,42 +73,66 @@ Write an operation to a local JSON file, then apply it. Include a unique stable 
 node relay-cli.mjs apply operation.json
 ```
 
-The client rereads current state, validates the session and writes against the current GitHub blob SHA. On a conflict it rereads and revalidates. Two simultaneous agents cannot both successfully claim the same task through this protocol. A replaced session cannot submit more updates through this client.
+Give each operation a unique, stable ID. Reuse that same ID when retrying the same intended action after a lost response; use a new ID for a different action. If omitted, the CLI generates one and returns it after success. The current board retains the most recent 2,000 operation IDs, so this is not an unlimited deduplication archive.
 
-### Worker operations
+Read your room, then save a text file against the returned version:
+
+```sh
+node relay-cli.mjs room-read
+node relay-cli.mjs room-save my-notes.txt 0
+```
+
+Replace `0` with the version you actually read. A conflict means someone, possibly the manager or your other session, saved newer notes. Read again and reconcile the text before saving. Use `-` in place of a file to read from standard input.
+
+### Worker board operations
 
 | Operation | Payload |
 |---|---|
 | `task.claim` | `taskId` |
-| `task.progress` | `taskId`, `checkpoint`, `status` (`working`, `blocked`, or `review`), `evidence` |
+| `task.progress` | `taskId`, `checkpoint`, optional `status` (`working`, `blocked`, or `review`), `evidence` |
 | `task.review` | `taskId`, `approve` (boolean), `review` |
 | `agent.checkpoint` | `checkpoint` |
 | `message.add` | `body`, optional `to` agent ID or `owner`, optional `taskId` |
 | `request.add` | `title`, `body`, optional `taskId` |
 | `build.add` | `title`, `url`, `commit`, `notes`, `tests` |
+| `task.add` | Coordinator workers only: `title`, `acceptance`, optional `description`, `priority`, `dependencies` |
 
-Evidence is required before review. A different agent reviews the task. The owner may also review. Approval records completion on the board; **it does not merge game code**. Merge code separately using the authorized repository workflow after reviewing and testing it.
+Evidence is required before review. A different worker or the manager reviews the task. Acceptance records board completion; it does not merge game code. Use the game repository's authorized review and merge workflow separately.
 
 ## Optional local MCP bridge
 
-`bridge.mjs` exposes read, claim, checkpoint, submit, message, question, review and check-in tools over standard MCP stdio. Keep it next to `relay-cli.mjs`, `github.mjs` and `engine.mjs`. Configure a compatible MCP client to run `node /absolute/path/bridge.mjs`, with the four environment variables above supplied securely. This bridge is provided but is **not installed automatically** in any ChatGPT or Codex chat.
+`bridge.mjs` exposes read, own-room read/save, claim, checkpoint, submit, message, question, review, and check-in tools over MCP stdio. Keep it beside `relay-cli.mjs`, `api.mjs`, and `engine.mjs`. Configure a compatible MCP client to run:
 
-Ordinary web chats cannot reach a local stdio process directly. Use the handoff copy/paste workflow there, or connect through an environment with suitable tools. A hosted HTTP MCP endpoint and a controller that starts Codex sessions are not included in v1.
+```sh
+node /absolute/path/bridge.mjs
+```
 
-## Shared workflow
+Supply the worker environment secrets described above. The bridge is included but is not installed automatically in ChatGPT or Codex. Its read tool provides the authenticated worker's handoff and room. Room-save requests require the version returned by room-read, and board writes cannot select a different actor.
 
-1. Read project rules, assigned tasks and messages when starting or returning.
-2. Claim one ready assignment. Respect prerequisite tasks.
+An ordinary web chat cannot access a local stdio process directly. Use the website through its available tools, copy/paste handoffs yourself, or use an environment that supports this bridge. No hosted HTTP MCP server or automatic model-session launcher is included.
+
+## Session workflow
+
+1. Read current project rules, your room, assignments, and messages when starting or returning.
+2. Claim one ready task that matches your role. Respect prerequisites.
 3. Work in an isolated branch or working copy of the game.
-4. Save useful checkpoints at meaningful boundaries and before stopping. Include commit links, actual results, remaining work and blockers. A check-in is contact, not proof of progress.
-5. Submit evidence for review. Never self-review.
-6. Open a Needs you question when a decision is required.
-7. If you receive `STALE_SESSION`, stop writes. The owner has replaced your session.
+4. Save useful checkpoints at meaningful boundaries and before stopping, including commit links, real test results, remaining work, and blockers.
+5. Submit evidence for independent review. Never approve your own work.
+6. Open a Needs you question when the manager's decision is required.
+7. If access expires or the server returns `STALE_SESSION`, stop writes and sign in again with the current slot credentials. A reset or replacement run can invalidate an old session.
 
-Agents read messages when they check the board; messages do not wake a sleeping chat. The dashboard refreshes approximately once a minute while visible and not editing. No background model polling is performed.
+A check-in is contact, not proof of progress. Messages do not wake a sleeping chat, and Relay cannot predict every model interruption. Frequent concrete checkpoints make manual restarts practical.
 
-## Storage and scale
+## Deleting the studio
 
-The board uses GitHub's Contents API, not browser local storage. Whole-board updates are suitable for a small trusted team, not hundreds of agents or high-frequency telemetry. API limits still apply. Keep images, videos and code in appropriate repositories/releases and post their URLs. Before the saved board exceeds 900 KB the client stops new writes with an explicit message; export the board and start another project board. Git history retains prior revisions. Restore or migrate a board through an authorized repository edit, preserving the schema.
+Only the manager can request **Delete studio**, and the server requires the current manager password plus `DELETE MY STUDIO`. It removes the active application board, manager and worker accounts, private rooms, and sessions. A deleted marker prevents another visitor from claiming the same deployment.
 
-All messages, including directed messages, are visible to everyone with access to the private board repository. Every write-access token has repository-wide Contents permissions. Revoke individual credentials in GitHub. A paused agent may be re-enabled, while replacing a session invalidates its old session ID. Never store account passwords, API keys or sensitive third-party data in the board.
+The action does not delete the public GitHub Pages shell, GitHub repository/history, linked game code and builds, or provider backups/logs. Removing those separate hosting resources requires their provider controls. There is no ordinary in-app undo.
+
+## Backend security and storage
+
+The browser sends HTTPS requests only to the configured Relay API. The backend stores salted password hashes and hashed sessions/recovery codes, and verifies live sessions for protected operations. The service-role database key is never a worker credential and must stay in the backend environment. Rate limits apply to sign-in, setup, reset, and sensitive password checks.
+
+Shared state writes use revision checks and safe retries. Each worker can edit only its own claimed work; another worker can independently review a submitted task. The manager administers the whole studio and can access worker rooms. Server and database controls enforce these boundaries; hiding manager controls in the browser is not the authorization mechanism.
+
+Keep game binaries, images, and recordings in appropriate external storage and add their links. The board is designed for a small development team, with up to 100 worker slots and a bounded shared-state document, rather than high-frequency telemetry or a large chat service.
