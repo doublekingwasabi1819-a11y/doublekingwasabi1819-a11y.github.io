@@ -1,4 +1,4 @@
-import {createInbox,createDemoInboxAPI} from './dm-ui.mjs?v=a11y-20261002';
+import {createInbox,createDemoInboxAPI} from './dm-ui.mjs?v=inbox-20261002b';
 import {emptyState,applyOperation,newId,STATUS,LABEL,handoff} from './engine.mjs?v=dm-20261002';
 import {RelayAPI} from './api.mjs?v=dm-20261002';
 import {API_BASE} from './config.mjs?v=dm-20261002';
@@ -106,6 +106,13 @@ async function accountAction(action,id){switch(action){case'demo-worker':demoWor
 async function initialize(){render();if(!api.configured)return;try{if(await api.restore()){store=api;await loadContext();mode='live';view='room';render();dm.poll();return;}}catch{api.disconnect();}await checkAccountStatus();}
 document.addEventListener('click',async e=>{const el=e.target.closest('[data-action]');if(!el)return;const {action,id}=el.dataset;try{if(await accountAction(action,id))return;switch(action){case'connect':formConnection();break;case'close':$('#modal').close();break;case'new-task':newTask();break;case'new-agent':newAgent();break;case'task':taskDetail(id);break;case'project':project();break;case'new-note':note();break;case'edit-note':note(id);break;case'new-build':newBuild();break;case'new-request':newRequest();break;case'resolve':resolve(id);break;case'session':if(!isManager())throw new Error('Manager access required.');startSession(id);break;case'handoff':if(!isManager()&&id!==actor.id)throw new Error('Open your own handoff from My room.');showText(name(id)+' · handoff',handoff(state,id,mode==='live'?'Relay accounts — '+location.origin:store?.repo));break;case'copy-text':await copyText($('#handoff-text').value);break;case'pause-agent':if(!isManager())throw new Error('Manager access required.');await mutate('agent.update',{agentId:id,enabled:!agent(id).enabled});toast('Agent updated');break;case'layout':taskLayout=id;render();break;case'channel':channel=id;render();break;case'refresh':if(mode==='live')await refresh();else toast('Sign in to refresh shared work');break;case'export':exportBoard();break;case'demo':demo();break;case'disconnect':clearSession();break;case'task-message':formDialog('Task message','This message stays with the assignment.',field('Message','body','','textarea'),'Post message',async d=>{await mutate('message.add',{body:d.body,taskId:id});});break;case'release':if(!isManager())throw new Error('Only the manager can release assignments.');formDialog('Release this task?','Make sure its current worker has stopped.','<p class="instruction">The saved checkpoint remains. Another agent will be able to claim this assignment.</p>','Release task',async()=>{await mutate('task.release',{taskId:id});});break;}}catch(err){toast(err.message);}});
 $('#menu-toggle').onclick=()=>{const sidebar=$('.sidebar');sidebar.classList.toggle('open');syncNavigation();if(sidebar.classList.contains('open'))sidebar.querySelector('a,button')?.focus();};
+document.addEventListener('click',e=>{
+  const sidebar=$('.sidebar'),toggle=$('#menu-toggle');
+  if(!(e.target instanceof Element)||!sidebar.classList.contains('open')||getComputedStyle(toggle).display==='none'||sidebar.contains(e.target)||$('#modal').open)return;
+  // Dismiss from page space while keeping links, buttons, and form controls usable.
+  if(e.target.closest('a,button,input,select,textarea,label,summary,[role="button"],[role="link"],[contenteditable]:not([contenteditable="false"]),[data-action]'))return;
+  sidebar.classList.remove('open');syncNavigation({returnFocus:true});
+});
 window.addEventListener('resize',()=>syncNavigation());
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('.sidebar').classList.contains('open')&&!$('#modal').open){e.preventDefault();$('.sidebar').classList.remove('open');syncNavigation({returnFocus:true});}});
 window.addEventListener('hashchange',()=>{const fromSidebar=$('.sidebar').contains(document.activeElement);view=location.hash.slice(1)||'overview';$('.sidebar').classList.remove('open');render();if(fromSidebar)$('#content').focus();});
