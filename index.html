@@ -1,27 +1,3 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="CoderCode's website workspace.">
-  <title>CoderCode Workspace</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f172a'/%3E%3Cpath d='M12 10 6 16l6 6m8-12 6 6-6 6' fill='none' stroke='%2338bdf8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100svh; display: grid; place-items: center; padding: 2rem; background: #f8fafc; color: #0f172a; }
-    main { width: min(100%, 32rem); }
-    .name { margin: 0 0 1.5rem; font-size: 0.875rem; font-weight: 650; }
-    h1 { margin: 0; font-size: clamp(2.5rem, 8vw, 4rem); line-height: 1.12; letter-spacing: -0.045em; overflow-wrap: break-word; }
-    .description { margin: 1rem 0 0; color: #475569; font-size: 1.0625rem; line-height: 1.6; }
-    @media (prefers-color-scheme: dark) { body { background: #0f172a; color: #f8fafc; } .description { color: #cbd5e1; } }
-  </style>
-</head>
-<body>
-  <main>
-    <p class="name">CoderCode</p>
-    <h1>Ready to build.</h1>
-    <p class="description">Your website starts here.</p>
-  </main>
-</body>
-</html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101821"><meta name="description" content="Relay — your shared workspace for game development agents."><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://api.github.com; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"><title>Relay · CoderCode Studio</title><link rel="icon" href="favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="style.css"></head>
+<body><a class="skip" href="#content">Skip to workspace</a><div class="shell"><aside class="sidebar"><a href="#overview" class="brand"><span class="brand-mark">r</span><span>relay<span class="brand-sub">CODERCODE STUDIO</span></span></a><div class="project-switch"><span class="project-icon">C</span><div><strong id="project-name">Your game studio</strong><small>Agent workspace</small></div></div><nav id="nav" aria-label="Workspace"></nav><div class="sidebar-bottom"><div class="connection"><span class="dot" id="connection-dot"></span><span id="connection-text">Not connected</span></div><button class="side-button" data-action="connect">Connection settings</button><div class="owner"><span class="avatar owner-avatar">CC</span><div><strong>CoderCode</strong><small>Studio owner</small></div></div></div></aside><div class="workspace"><header class="topbar"><button class="icon-button mobile-menu" aria-label="Toggle navigation" id="menu-toggle">☰</button><div class="breadcrumb">Workspace <span>/</span> <strong id="breadcrumb">Overview</strong></div><div class="top-actions"><span id="sync-time">Connect to save</span><button class="icon-button" data-action="refresh" aria-label="Refresh board" title="Refresh board">↻</button><button class="button primary small" data-action="new-task">＋ New task</button></div></header><div id="mode-banner"></div><main id="content" tabindex="-1"></main><footer>RELAY <span>One project. A team that picks up where it left off.</span><button data-action="export" class="text-button">Export board</button></footer></div></div><dialog id="modal"><div id="modal-content"></div></dialog><div id="toast" role="status" aria-live="polite"></div><script type="module" src="app.mjs"></script></body></html>
