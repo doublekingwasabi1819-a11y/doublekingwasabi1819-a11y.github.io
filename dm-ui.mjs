@@ -3,6 +3,7 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let inbox={contacts:[],threads:[],unreadCount:0},loaded=false,polling=false,selected=null,messages=[],hasMore=false,error='',generation=0;
   const drafts=new Map();
+  const paintedHTML=new WeakMap(),pendingOptions=new WeakMap();
   const key=(a,b)=>[a,b].sort().join(':');
   const person=id=>id===getUser()?.id?getUser():inbox.contacts.find(c=>c.id===id);
   const label=id=>person(id)?.name||'Former worker';
@@ -12,6 +13,47 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   const draftKey=()=>selected?key(selected.participantA,selected.participantB):'';
   const incoming=()=>messages.filter(m=>m.recipientId===getUser()?.id&&!m.readAt);
   const stamp=v=>new Date(v).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  const nodeKey=node=>node.dataset.dmThread?`thread:${node.dataset.dmThread}`:node.dataset.dmMessage?`message:${node.dataset.dmMessage}`:node.dataset.dmAction?`action:${node.dataset.dmAction}`:node.querySelector('#dm-recipient')?'recipient':`${node.tagName}:${node.className}`;
+  function applyOptions(select,html){
+    const value=select.value;select.innerHTML=html;
+    select.value=Array.from(select.options).some(option=>option.value===value)?value:'';
+  }
+  function updateNode(node,next){
+    const select=node.querySelector('#dm-recipient'),nextSelect=next.querySelector('#dm-recipient');
+    if(select&&nextSelect){
+      const html=nextSelect.innerHTML;
+      if(select.innerHTML===html){pendingOptions.delete(select);return;}
+      // Keep the native select and its options untouched while its picker may be open.
+      if(document.activeElement===select){
+        pendingOptions.set(select,html);
+        select.onblur=()=>{const pending=pendingOptions.get(select);pendingOptions.delete(select);if(pending!==undefined&&select.isConnected)applyOptions(select,pending);};
+      }else{pendingOptions.delete(select);applyOptions(select,html);}
+      return;
+    }
+    // Reuse buttons so listeners, transient disabled state, and focus survive updates.
+    if(node.className!==next.className)node.className=next.className;
+    if(node.innerHTML!==next.innerHTML)node.innerHTML=next.innerHTML;
+  }
+  function patchChildren(target,html){
+    if(!target||paintedHTML.get(target)===html)return;
+    const template=document.createElement('template');template.innerHTML=html;
+    const focused=document.activeElement,hadFocus=target.contains(focused);
+    const previous=Array.from(target.children),byKey=new Map(previous.map(node=>[nodeKey(node),node])),kept=new Set();
+    let cursor=target.firstElementChild;
+    for(const next of Array.from(template.content.children)){
+      const node=byKey.get(nodeKey(next))||next;
+      if(node!==next)updateNode(node,next);
+      if(node!==cursor)target.insertBefore(node,cursor);
+      kept.add(node);cursor=node.nextElementSibling;
+    }
+    for(const node of previous)if(!kept.has(node))node.remove();
+    paintedHTML.set(target,html);
+    if(hadFocus&&document.activeElement!==focused){
+      if(focused.isConnected)focused.focus({preventScroll:true});
+      else{target.tabIndex=-1;target.focus({preventScroll:true});}
+    }
+  }
+  function paintSidebar(){patchChildren(document.querySelector('#dm-sidebar'),sidebar());bindSidebar();}
   function badges(){
     const n=inbox.unreadCount;
     document.querySelectorAll('[data-dm-count]').forEach(el=>{el.textContent=n>99?'99+':n;el.hidden=!n;});
@@ -20,19 +62,24 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
     document.title=document.title.replace(/^\(\d+\) /,'');if(n)document.title=`(${n}) ${document.title}`;
   }
   function sidebar(){return `<label class="field"><span class="field-label">Start a conversation</span><select id="dm-recipient" aria-label="Message a worker"><option value="">Choose a worker…</option>${inbox.contacts.filter(c=>c.enabled).map(c=>`<option value="${esc(c.id)}">${esc(c.name)}${c.role==='manager'?' · Manager':''}</option>`).join('')}</select></label><div class="nav-label">${getUser()?.role==='manager'?'ALL PRIVATE CONVERSATIONS':'YOUR CONVERSATIONS'}</div>${inbox.threads.map(t=>`<button class="dm-thread-button ${selected&&key(t.participantA,t.participantB)===draftKey()?'active':''}" data-dm-thread="${esc(key(t.participantA,t.participantB))}"><span class="dm-thread-title">${esc(title(t))}${t.unreadCount?`<span class="nav-badge">${t.unreadCount}</span>`:''}</span><span class="dm-preview">${esc(t.lastMessage.body.slice(0,75))}</span><time>${esc(stamp(t.lastMessage.createdAt))}</time></button>`).join('')||'<p class="subtitle">No conversations yet.</p>'}`;}
-  function messagesHTML(){return `${hasMore?'<button class="button small" data-dm-action="older">Load older messages</button>':''}${messages.map(m=>`<article class="dm-bubble ${m.senderId===getUser()?.id?'mine':''}"><div class="dm-meta"><strong>${esc(label(m.senderId))}</strong><time>${esc(stamp(m.createdAt))}</time></div><p>${esc(m.body)}</p><small>${m.readAt?'Read by recipient':m.senderId===getUser()?.id?'Sent': 'Unread'}</small></article>`).join('')||'<div class="empty"><h3>Your conversation starts here</h3><p>Send a private message below.</p></div>'}`;}
+  function messagesHTML(){return `${hasMore?'<button class="button small" data-dm-action="older">Load older messages</button>':''}${messages.map(m=>`<article data-dm-message="${esc(m.id)}" class="dm-bubble ${m.senderId===getUser()?.id?'mine':''}"><div class="dm-meta"><strong>${esc(label(m.senderId))}</strong><time>${esc(stamp(m.createdAt))}</time></div><p>${esc(m.body)}</p><small>${m.readAt?'Read by recipient':m.senderId===getUser()?.id?'Sent': 'Unread'}</small></article>`).join('')||'<div class="empty"><h3>Your conversation starts here</h3><p>Send a private message below.</p></div>'}`;}
   function threadHTML(){
     if(!selected)return '<div class="empty"><h3>Choose a conversation</h3><p>Select a worker to send a private message.</p></div>';
     const own=[selected.participantA,selected.participantB].includes(getUser()?.id),peer=selected.participantA===getUser()?.id?selected.participantB:selected.participantA;
     return `<div class="panel-header"><h2>${esc(title(selected))}</h2><button class="button small" data-dm-action="refresh">Refresh</button></div><div id="dm-messages" class="dm-message-list" aria-live="polite">${messagesHTML()}</div><div class="dm-read-bar"><button class="button small" data-dm-action="read" ${incoming().length?'':'hidden'}>Mark displayed messages read</button><span id="dm-thread-error" role="alert">${esc(error)}</span></div>${own?`<form id="dm-compose" class="compose"><label class="field"><span class="field-label">Private message to ${esc(label(peer))}</span><textarea name="body" aria-label="Private message" required maxlength="12000" placeholder="Write a private message…">${esc(drafts.get(draftKey())?.body||'')}</textarea></label><div class="form-error" role="alert"></div><div class="actions"><span class="checkbox-caption">Only you, ${esc(label(peer))}, and the manager can read this.</span><button class="button primary small" type="submit" ${person(peer)?.enabled===false?'disabled':''}>Send privately</button></div></form>`:'<div class="callout dm-manager-note">Manager view · Reading here does not clear either worker’s unread notification.</div>'}`;
   }
-  function paint(){if(!active())return;document.querySelector('#dm-sidebar').innerHTML=sidebar();document.querySelector('#dm-thread-area').innerHTML=threadHTML();bind();}
-  function paintMessages(){if(!active()||!selected)return;const list=document.querySelector('#dm-messages');if(list)list.innerHTML=messagesHTML();const read=document.querySelector('[data-dm-action="read"]');if(read)read.hidden=!incoming().length;}
+  function paint(){
+    if(!active())return;paintSidebar();
+    const select=document.querySelector('#dm-recipient'),userId=getUser()?.id;
+    if(select)select.value=selected?.participantA===userId?selected.participantB:selected?.participantB===userId?selected.participantA:'';
+    document.querySelector('#dm-thread-area').innerHTML=threadHTML();bind();
+  }
+  function paintMessages(){if(!active()||!selected)return;patchChildren(document.querySelector('#dm-messages'),messagesHTML());const read=document.querySelector('[data-dm-action="read"]');if(read)read.hidden=!incoming().length;}
   async function poll(){
     if(!isLive()||polling)return;const token=api.token,g= generation;polling=true;
     try{const next=await api.call('dm.inbox');if(!current(token)||g!==generation)return;const prior=inbox.unreadCount;inbox=next;loaded=true;error='';badges();
       if(next.unreadCount>prior)toast(`${next.unreadCount} unread private message${next.unreadCount===1?'':'s'}. Open Inbox to read.`);
-      if(active()){document.querySelector('#dm-sidebar').innerHTML=sidebar();bindSidebar();if(selected)await loadThread(false);else document.querySelector('#dm-thread-area').innerHTML=threadHTML();}
+      if(active()){paintSidebar();if(selected)await loadThread(false);else patchChildren(document.querySelector('#dm-thread-area'),threadHTML());}
     }catch(e){if(!current(token)||g!==generation)return;error=e.message;if(['SESSION','UNAUTHORIZED','STALE_SESSION','DELETED'].includes(e.code)){reset();onSessionError();return;}if(active())document.querySelector('#dm-load-error').textContent=e.message;}
     finally{if(g===generation)polling=false;}
   }
@@ -52,11 +99,17 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   }
   function bind(){
     bindSidebar();const root=active();if(!root)return;
-    root.onclick=async e=>{const button=e.target.closest('[data-dm-action]');if(!button)return;const action=button.dataset.dmAction;button.disabled=true;try{
+    root.onclick=async e=>{const button=e.target.closest('[data-dm-action]');if(!button)return;const action=button.dataset.dmAction,hadFocus=document.activeElement===button,focusToken=api.token,focusGeneration=generation,focusThread=draftKey();button.disabled=true;try{
       if(action==='refresh'){await poll();await loadThread();}
       if(action==='older')await loadThread(true);
       if(action==='read'){const ids=incoming().map(m=>m.id).slice(-100),token=api.token,g=generation;await api.call('dm.read',{messageIds:ids});if(!current(token)||g!==generation)return;messages=messages.map(m=>ids.includes(m.id)?{...m,readAt:new Date().toISOString()}:m);paintMessages();await poll();toast('Displayed messages marked read');}
-    }catch(e){const el=document.querySelector('#dm-thread-error');if(el)el.textContent=e.message;}finally{button.disabled=false;}};
+    }catch(e){const el=document.querySelector('#dm-thread-error');if(el)el.textContent=e.message;}finally{
+      button.disabled=false;
+      if(hadFocus&&current(focusToken)&&focusGeneration===generation&&focusThread===draftKey()&&(document.activeElement===document.body||document.activeElement===button)){
+        if(button.isConnected&&!button.hidden)button.focus({preventScroll:true});
+        else if(action==='older'&&root.isConnected){const list=root.querySelector('#dm-messages');if(list){list.tabIndex=-1;list.focus({preventScroll:true});}}
+      }
+    }};
     const form=document.querySelector('#dm-compose');if(!form)return;
     form.elements.body.oninput=e=>{const d=drafts.get(draftKey());drafts.set(draftKey(),{body:e.target.value,clientId:d?.body===e.target.value?d.clientId:crypto.randomUUID()});};
     form.onsubmit=async e=>{e.preventDefault();const token=api.token,g=generation,k=draftKey(),body=form.elements.body.value,recipientId=selected.participantA===getUser().id?selected.participantB:selected.participantA;
