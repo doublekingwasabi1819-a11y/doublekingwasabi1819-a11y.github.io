@@ -29,7 +29,7 @@ export class RelayAPI {
     if(!this.configured)throw new HubError('Account sign-in is waiting for backend activation.','NOT_CONFIGURED');
     const token=this.token;
     let response;
-    try{response=await this.fetcher(this.base,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({action,data}),cache:'no-store',credentials:'omit',referrerPolicy:'no-referrer'});}
+    try{response=await this.fetcher.call(globalThis,this.base,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({action,data}),cache:'no-store',credentials:'omit',referrerPolicy:'no-referrer'});}
     catch{throw new HubError('Could not reach Relay. Your draft is still here. Check your connection and retry.','NETWORK');}
     let result;try{result=await response.json();}catch{throw new HubError('The server returned an unreadable response.','NETWORK');}
     if(!response.ok||result?.error){
