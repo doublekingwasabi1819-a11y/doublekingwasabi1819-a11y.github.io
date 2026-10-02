@@ -1,6 +1,6 @@
-import {emptyState,applyOperation,newId,STATUS,LABEL,handoff} from './engine.mjs';
-import {RelayAPI} from './api.mjs';
-import {API_BASE} from './config.mjs';
+import {emptyState,applyOperation,newId,STATUS,LABEL,handoff} from './engine.mjs?v=accounts-20261002';
+import {RelayAPI} from './api.mjs?v=accounts-20261002';
+import {API_BASE} from './config.mjs?v=accounts-20261002';
 const $=s=>document.querySelector(s), h=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={room:'M3 10l9-7 9 7 M5 9v12h14V9 M9 21v-8h6v8',overview:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',tasks:'M8 5h13M8 12h13M8 19h13 M3 5h.1M3 12h.1M3 19h.1',team:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M16 3a4 4 0 0 1 0 8 M22 21v-2a4 4 0 0 0-3-3.87 M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',messages:'M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5',memory:'M4 3h6a3 3 0 0 1 3 3v16a4 4 0 0 0-4-3H4z M20 3h-4a3 3 0 0 0-3 3 M13 22a4 4 0 0 1 4-3h3V3',builds:'M12 3l9 5v9l-9 5-9-5V8z M3 8l9 5 9-5 M12 13v9',needs:'M12 8v5 M12 17h.01 M10.3 3.9l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0',connect:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2'};
 const icon=k=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[k]||paths.tasks}"/></svg>`;
