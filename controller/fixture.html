@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Relay browser test</title>
+<style>body{font:18px system-ui;background:#f2f5f9;color:#17263c;margin:60px}main{max-width:600px;padding:32px;background:white;border:1px solid #d6deea;border-radius:20px}button,input{font:inherit;padding:12px;border-radius:10px;border:1px solid #9aa9bc}button{background:#1768dc;color:white;cursor:pointer}.secret{margin-top:20px}#cursor{position:fixed;left:0;top:0;z-index:2147483647;width:14px;height:14px;border:3px solid #e74335;background:#fff8;border-radius:50%;pointer-events:none;transform:translate(-50%,-50%);display:none}</style>
+<main><h1>Relay browser test</h1><p>No real accounts. No external websites.</p>
+<label>Test note <input type="text" data-controller-target="note" aria-label="Test note" maxlength="4000"></label>
+<p><button type="button" data-controller-target="save">Save test note</button></p>
+<p data-controller-status>Waiting</p>
+<div class="secret" data-controller-mask><label>Password fixture <input type="password" value="fixture-secret-never-return"></label></div>
+</main><div id="cursor" aria-hidden="true"></div>
+<script>
+let saves=0;
+document.querySelector('button').addEventListener('click',()=>{saves++;document.querySelector('[data-controller-status]').textContent=`Saved ${saves} test note(s).`;});
+document.addEventListener('mousemove',e=>{let c=document.getElementById('cursor');c.style.display='block';c.style.left=e.clientX+'px';c.style.top=e.clientY+'px';});
+</script></html>
