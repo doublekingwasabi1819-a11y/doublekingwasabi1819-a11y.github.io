@@ -78,7 +78,7 @@ export function createControllerHttp({controller, authenticate, serverFactory,
   const staticRoutes = new Map(Object.entries(publicRoutes).map(([path, route]) =>
     [path, {body: route.body, contentType: route.contentType, headers: {...route.headers}}]));
   const factory = serverFactory || (requestContext => createControllerMcp({controller, requestContext}));
-  let closed = false, active = 0, nodeServer;
+  let closed = false, active = 0, nodeServer, cancelStartup;
   const inFlight = new Set();
 
   async function expire() {
@@ -187,7 +187,7 @@ export function createControllerHttp({controller, authenticate, serverFactory,
     if (closed || nodeServer || !loopback.has(host) || !integer(port, 0, 65535)) {
       throw new TypeError('Explicit loopback HTTP configuration is required.');
     }
-    nodeServer = createServer({maxHeaderSize: 8192}, async (req, res) => {
+    const server = createServer({maxHeaderSize: 8192}, async (req, res) => {
       const authority = req.headers.host || '';
       try {
         const headers = new Headers();
@@ -206,12 +206,35 @@ export function createControllerHttp({controller, authenticate, serverFactory,
         res.end('{"error":"Invalid request."}');
       }
     });
-    nodeServer.headersTimeout = 10000; nodeServer.requestTimeout = 15000;
-    nodeServer.keepAliveTimeout = 1000;
-    await new Promise((resolve, reject) => {
-      nodeServer.once('error', reject); nodeServer.listen(port, host, resolve);
-    });
-    const address = nodeServer.address();
+    nodeServer = server;
+    server.headersTimeout = 10000; server.requestTimeout = 15000;
+    server.keepAliveTimeout = 1000;
+    // Runtime server errors must not become uncaught exceptions or log private
+    // details. Startup errors also reach the bounded listener below.
+    server.on('error', () => {});
+    try {
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = error => {
+          if (settled) return;
+          settled = true;
+          server.off('error', onError); server.off('listening', onListening);
+          if (cancelStartup === cancel) cancelStartup = undefined;
+          error ? reject(error) : resolve();
+        };
+        const onError = error => finish(error), onListening = () => finish();
+        const cancel = () => finish(new TypeError('The HTTP host closed during startup.'));
+        cancelStartup = cancel;
+        server.once('error', onError); server.once('listening', onListening);
+        try {server.listen(port, host);} catch (error) {finish(error);}
+      });
+      if (closed) throw new TypeError('The HTTP host closed during startup.');
+    } catch (error) {
+      // A failed candidate cannot hold the listener slot or erase a newer one.
+      if (nodeServer === server) nodeServer = undefined;
+      throw error;
+    }
+    const address = server.address();
     const url = `http://${host === '::1' ? '[::1]' : host}:${address.port}${endpoint}`;
     // Browser POSTs to our own loopback viewer include Origin. Admit only the
     // exact listening origin, including its actual port; unrelated localhost
@@ -222,8 +245,12 @@ export function createControllerHttp({controller, authenticate, serverFactory,
 
   async function close() {
     closed = true;
-    const shutdown = nodeServer ? new Promise(resolve => {
-      nodeServer.close(resolve); nodeServer.closeIdleConnections();
+    const server = nodeServer;
+    // Closing a not-yet-listening Node server can cancel its bind without
+    // emitting listening/error. Explicitly settle the caller's startup first.
+    cancelStartup?.();
+    const shutdown = server ? new Promise(resolve => {
+      server.close(resolve); server.closeIdleConnections();
     }) : Promise.resolve();
     await Promise.all([...contexts.values()].map(entry => entry.handler.close()));
     await Promise.allSettled([...inFlight]);

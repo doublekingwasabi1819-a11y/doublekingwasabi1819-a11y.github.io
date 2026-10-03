@@ -1,26 +1,34 @@
 import {createHash} from 'node:crypto';
 
 const script=`
-let credential='',enabled=false,busy=false,imageURL='',generation=0;
+let credential='',enabled=false,imageURL='',generation=0,activeSnapshot=null;
+const requests=new Set(),requestTimeoutMs=10000;
 const status=document.querySelector('#status'),image=document.querySelector('#screen');
 const connect=document.querySelector('#connect'),pause=document.querySelector('#pause');
 const token=document.querySelector('#token'),open=document.querySelector('#open');
 function clearImage(){image.hidden=true;image.removeAttribute('src');if(imageURL)URL.revokeObjectURL(imageURL);imageURL='';}
-function disconnect(message='Disconnected'){generation++;enabled=false;credential='';open.disabled=true;pause.disabled=true;clearImage();status.textContent=message;}
-async function request(path,options={},auth=credential){
- const response=await fetch(path,{...options,cache:'no-store',credentials:'omit',headers:{Authorization:'Bearer '+auth,...options.headers}});
- if(!response.ok){const error=new Error(response.status===401||response.status===403?'Connection expired or unavailable.':response.status===404?'Start the browser to see its screen.':'Browser operation unavailable.');error.authFailure=response.status===401||response.status===403;throw error;}
- return response;
+function disconnect(message='Disconnected'){generation++;enabled=false;credential='';activeSnapshot=null;for(const request of requests)request.abort();open.disabled=true;pause.disabled=true;clearImage();status.textContent=message;}
+async function request(path,options={},auth=credential,read=response=>response){
+ const controller=new AbortController();requests.add(controller);let timer,timeout=false;
+ const cancelled=new Promise((_,reject)=>controller.signal.addEventListener('abort',()=>{const error=new Error('Browser request cancelled.');error.timeout=timeout;reject(error);},{once:true}));
+ timer=setTimeout(()=>{timeout=true;controller.abort();},requestTimeoutMs);
+ try{return await Promise.race([cancelled,(async()=>{
+  const response=await fetch(path,{...options,signal:controller.signal,cache:'no-store',credentials:'omit',headers:{Authorization:'Bearer '+auth,...options.headers}});
+  if(!response.ok){const error=new Error(response.status===401||response.status===403?'Connection expired or unavailable.':'Browser operation unavailable.');error.authFailure=response.status===401||response.status===403;error.notFound=response.status===404;throw error;}
+  return await read(response);
+ })()]);}finally{clearTimeout(timer);requests.delete(controller);}
 }
 async function snapshot(){
- if(!enabled||busy)return;busy=true;const epoch=generation,auth=credential;
- try{const response=await request('/viewer/snapshot',{},auth);const blob=await response.blob();if(!enabled||epoch!==generation)return;
+ if(!enabled||activeSnapshot)return;const job={epoch:generation},epoch=generation,auth=credential;activeSnapshot=job;
+ try{const blob=await request('/viewer/snapshot',{},auth,response=>response.blob());if(!enabled||epoch!==generation)return;
   const next=URL.createObjectURL(blob);image.src=next;if(imageURL)URL.revokeObjectURL(imageURL);imageURL=next;image.hidden=false;status.textContent='Connected · masked browser view';
- }catch(error){if(epoch===generation){if(error.authFailure)disconnect(error.message);else status.textContent='Browser view unavailable. Start the browser or reconnect.';}}finally{busy=false;}
+ }catch(error){if(epoch===generation){if(error.authFailure)disconnect(error.message);else{clearImage();status.textContent=error.notFound?'Browser is closed. Start it to see its screen.':error.timeout?'Browser view timed out. Retrying…':'Browser view unavailable. Start the browser or reconnect.';}}}finally{if(activeSnapshot===job)activeSnapshot=null;}
 }
-connect.addEventListener('click',()=>{const next=token.value;token.value='';disconnect();credential=next;if(!credential){status.textContent='Enter your connection token.';return;}enabled=true;open.disabled=false;pause.disabled=false;snapshot();});
+function connectViewer(){const next=token.value;token.value='';disconnect();credential=next;if(!credential){status.textContent='Enter your connection token.';return;}enabled=true;open.disabled=false;pause.disabled=false;status.textContent='Connecting…';snapshot();}
+connect.addEventListener('click',connectViewer);
+token.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.isComposing){event.preventDefault();connectViewer();}});
 pause.addEventListener('click',()=>disconnect());
-open.addEventListener('click',async()=>{if(!enabled)return;const epoch=generation,auth=credential;open.disabled=true;try{await request('/viewer/open',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'},auth);if(epoch===generation)await snapshot();}catch(error){if(epoch===generation){if(error.authFailure)disconnect(error.message);else status.textContent='Browser operation unavailable.';}}finally{if(epoch===generation)open.disabled=!enabled;}});
+open.addEventListener('click',async()=>{if(!enabled)return;const epoch=generation,auth=credential;open.disabled=true;try{await request('/viewer/open',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'},auth);if(epoch===generation)await snapshot();}catch(error){if(epoch===generation){if(error.authFailure)disconnect(error.message);else{clearImage();status.textContent=error.timeout?'Browser action timed out. Check the view before retrying.':'Browser operation unavailable.';}}}finally{if(epoch===generation)open.disabled=!enabled;}});
 setInterval(snapshot,750);
 addEventListener('pagehide',()=>disconnect());
 `;

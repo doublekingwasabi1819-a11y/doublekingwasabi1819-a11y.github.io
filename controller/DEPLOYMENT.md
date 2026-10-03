@@ -121,14 +121,19 @@ profile storage, process supervision and approved outbound access. The workflow
 runner is temporary test infrastructure, not that service.
 
 `relay-host.mjs` prepares the combined Relay/browser tools behind host-issued
-opaque grants. `oauth-resource.mjs` prepares protected-resource metadata and
-verified-token authentication but is not automatically connected to that host.
+opaque grants. `oauth-resource.mjs` supplies protected-resource policy and
+`oauth-bridge.mjs` explicitly connects it to a supplied reviewed private host
+without overriding that host's authentication. The bridge serves MCP and
+metadata only; the private viewer retains its separate opaque authentication.
 Use an external OAuth 2.1 provider with S256 PKCE, authorization-server discovery,
 client registration/metadata and the exact MCP resource audience. A reviewed
 host bridge must map verified identities/scopes to stable grants and share live
 worker authorization and expiry/revocation cleanup across browser and direct
-tools. Never pass OAuth bearer credentials to Relay. See README for the pinned
-SDK's top-level tool-metadata limitation and required ChatGPT linking proof.
+tools. Never pass OAuth bearer credentials to Relay. Internal private-host
+bearers necessarily remain in bounded bridge memory until cleanup; keep them
+out of persistence, logs, responses and frontend configuration. Public SDK
+handlers publish top-level tool security metadata while preserving call schema
+validation. Raw protocol checks remain separate from real ChatGPT linking proof.
 
 A secure MCP development tunnel is another endpoint option after a persistent
 host exists. It requires an approved Platform/workspace association and private

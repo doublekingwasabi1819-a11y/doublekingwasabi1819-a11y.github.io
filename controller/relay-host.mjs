@@ -2,17 +2,10 @@ import {fromJsonSchema} from '@modelcontextprotocol/server';
 import {createPrivateBrowserHost} from './serve.mjs';
 import {createControllerMcp} from './mcp-adapter.mjs';
 import {createRelayDriverFactory} from './relay-driver.mjs';
+import {installRelayToolMetadata, relayBrowserToolDescriptors, relayDirectToolDescriptors} from './mcp-tool-metadata.mjs';
 
 const UUID=/^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$/;
-const uuid={type:'string',pattern:UUID.source};
-const object=(properties={},required=[])=>({type:'object',properties,required,additionalProperties:false});
-const definitions=[
-  ['relay_fast_identity','Read the authorized Relay worker identity and unread count.',object(),true],
-  ['relay_fast_inbox','Read this worker’s private inbox contacts and conversation previews.',object(),true],
-  ['relay_fast_thread','Read this worker’s conversation with a resolved recipient. Does not mark messages read.',object({recipient_id:uuid,before_id:uuid},['recipient_id']),true],
-  ['relay_fast_send','Send an authorized private message to a resolved recipient. Preserve client_id and body after an uncertain send.',object({recipient_id:uuid,body:{type:'string',minLength:1,maxLength:12000},client_id:uuid},['recipient_id','body','client_id']),false],
-  ['relay_fast_mark_read','Acknowledge only incoming message IDs actually read by this worker.',object({message_ids:{type:'array',items:uuid,maxItems:100,uniqueItems:true}},['message_ids']),false]
-];
+const definitions=relayDirectToolDescriptors;
 const plain=x=>x&&typeof x==='object'&&!Array.isArray(x)&&Object.getPrototypeOf(x)===Object.prototype;
 const validId=x=>typeof x==='string'&&UUID.test(x);
 const count=x=>Number.isSafeInteger(x)&&x>=0;
@@ -36,15 +29,17 @@ function trustedRegistry(adapter){
   if(!plain(adapter)||Object.keys(adapter).some(k=>!['tools','callTool'].includes(k))||typeof adapter.callTool!=='function'||!Array.isArray(adapter.tools)||adapter.tools.length!==definitions.length)throw new TypeError('An explicit five-tool Relay adapter is required.');
   const seen=new Set();
   for(const tool of adapter.tools){
-    const expected=definitions.find(d=>d[0]===tool?.name);
-    if(!plain(tool)||!expected||seen.has(tool.name)||Object.keys(tool).some(k=>!['name','description','inputSchema','annotations','securitySchemes'].includes(k))||!schemaEqual(tool.inputSchema,expected[2])||!boundedText(tool.description,1000))throw new TypeError('Only the exact strict Relay tool registry is supported.');
-    if(!plain(tool.annotations)||Object.keys(tool.annotations).some(k=>!['readOnlyHint','destructiveHint','idempotentHint','openWorldHint'].includes(k))||tool.annotations.readOnlyHint!==expected[3]||tool.annotations.destructiveHint!==false||tool.annotations.idempotentHint!==true||tool.annotations.openWorldHint!==false)throw new TypeError('Relay tool annotations must match the trusted registry.');
-    if(!schemaEqual(tool.securitySchemes,[{type:'oauth2',scopes:[expected[3]?'relay:read':'relay:write']}]))throw new TypeError('Relay tool scope declarations must match the trusted registry.');
+    const expected=definitions.find(d=>d.name===tool?.name);
+    if(!plain(tool)||!expected||seen.has(tool.name)||Object.keys(tool).some(k=>!['name','description','inputSchema','annotations','securitySchemes'].includes(k))||!schemaEqual(tool.inputSchema,expected.inputSchema)||!boundedText(tool.description,1000))throw new TypeError('Only the exact strict Relay tool registry is supported.');
+    if(!plain(tool.annotations)||Object.keys(tool.annotations).some(k=>!['readOnlyHint','destructiveHint','idempotentHint','openWorldHint'].includes(k))||tool.annotations.readOnlyHint!==expected.annotations.readOnlyHint||tool.annotations.destructiveHint!==false||tool.annotations.idempotentHint!==true||tool.annotations.openWorldHint!==false)throw new TypeError('Relay tool annotations must match the trusted registry.');
+    // PR15's standalone adapter declares only its own read/write scope. This
+    // combined host's published descriptors also require browser:control.
+    if(!schemaEqual(tool.securitySchemes,[{type:'oauth2',scopes:[expected.annotations.readOnlyHint?'relay:read':'relay:write']}]))throw new TypeError('Relay tool scope declarations must match the trusted registry.');
     seen.add(tool.name);
   }
   // Capture the injected adapter method, not a mutable future registry. Models
   // never provide the adapter, source code, authority, profile, or credentials.
-  return {callTool:adapter.callTool.bind(adapter),tools:definitions.map(([name,description,inputSchema,readOnlyHint])=>({name,description,inputSchema:structuredClone(inputSchema),annotations:{readOnlyHint,destructiveHint:false,idempotentHint:true,openWorldHint:false}}))};
+  return {callTool:adapter.callTool.bind(adapter),tools:structuredClone(definitions)};
 }
 function bindingFor(value){
   if(!plain(value)||!validId(value.accountId)||!validId(value.agentId)||typeof value.workspaceId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(value.workspaceId)||typeof value.runId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(value.runId))invalid();
@@ -98,7 +93,7 @@ export function createRelayBrowserHost({profileRoot,resolveBinding,resolveWorker
     serverFactory:({controller,requestContext,target,withRequestContext})=>{
       if(typeof withRequestContext!=='function')throw new TypeError('A live trusted request-context hook is required.');
       const server=createControllerMcp({controller,requestContext,target});
-      for(const tool of adapter?.tools||[])server.registerTool(tool.name,{description:tool.description,annotations:structuredClone(tool.annotations),inputSchema:fromJsonSchema(structuredClone(tool.inputSchema))},async args=>{
+      for(const tool of adapter?.tools||[])server.registerTool(tool.name,{description:tool.description,annotations:structuredClone(tool.annotations),inputSchema:fromJsonSchema(structuredClone(tool.inputSchema)),_meta:structuredClone(tool._meta)},async args=>{
         try{return await withRequestContext(async(reference,anchoredBinding)=>{
           // Ownership comes from the grant's pinned live check, never a second
           // raw resolver that could silently select another worker or run.
@@ -108,6 +103,7 @@ export function createRelayBrowserHost({profileRoot,resolveBinding,resolveWorker
           return checkedOutput(tool.name,result?.structuredContent,copied,binding);
         });}catch(error){return failure(error);}
       });
+      installRelayToolMetadata(server,[...relayBrowserToolDescriptors,...(adapter?.tools||[])]);
       return server;
     }
   });

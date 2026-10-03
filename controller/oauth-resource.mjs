@@ -43,11 +43,14 @@ function scopes(value) {
  * validate the provider token or securely introspect it on EVERY request. A JWT
  * decode or caller-supplied claims are not verification. The hook returns
  * {claims, principalId, requestContext}; claims are the VERIFIED iss/sub/aud/
- * exp/nbf/scope/jti identity, principalId is a unique host-owned authorized grant,
- * and requestContext is the stable frozen authority-free {grantId} host object.
+ * exp/nbf/scope/jti identity, principalId is a unique server-owned OAuth lease,
+ * and requestContext is its stable frozen authority-free {grantId} reference.
+ * These are OAuth identity references, not private browser grants. A verifier
+ * used by oauth-bridge MUST NOT mint browser grants or resolve Relay credentials;
+ * bridge mapping happens only after the verified claims and request scopes pass.
  * Relay credentials are resolved separately by that host grant, never forwarded
  * from an incoming OAuth token. Browser permission still needs live host checks.
- * The verifier's grant mapping must intersect VERIFIED scopes with the host's
+ * Any downstream host mapping must intersect VERIFIED scopes with the host's
  * allowed browser/Relay permissions. A browser-only OAuth scope must never map
  * to a global/full-write Relay reference. This file does not automatically wire
  * OAuth into an existing private host or make scope-to-grant decisions for it.
@@ -161,10 +164,11 @@ export function createOAuthResource({resource, issuers, scopesSupported = ['brow
       value.requestContext.grantId, claims.exp, claims.jti || null, grantedScopes]));
     const previous = contextGrants.get(value.requestContext);
     if (previous && previous !== principalId) throw denied();
-    return {principalId, requestContext: value.requestContext, expiresAt: claims.exp * 1000};
+    return {principalId, requestContext: value.requestContext, expiresAt: claims.exp * 1000,
+      scopes: Object.freeze([...grantedScopes])};
   }
 
-  async function authenticate(request) {
+  async function authenticateGrant(request) {
     if (requestGate(request)) throw new HttpAuthenticationError('FORBIDDEN');
     const raw = request.headers.get('authorization') || '';
     const match = /^Bearer ([A-Za-z0-9._~+/-]+=*)$/i.exec(raw);
@@ -181,14 +185,26 @@ export function createOAuthResource({resource, issuers, scopesSupported = ['brow
       if (retiredContexts.has(identity.requestContext) || identity.expiresAt <= now() || (latest && (latest.revoked ||
           latest.principalId !== identity.principalId || latest.requestContext !== identity.requestContext))) throw denied();
       if (!verified.has(tokenHash) && verified.size >= maxVerifiedTokens) throw denied();
+      // Expired-token cleanup above can yield while another request pins this
+      // context. Recheck immediately before committing, with no intervening await.
+      const pinnedPrincipal = contextGrants.get(identity.requestContext);
+      if (pinnedPrincipal && pinnedPrincipal !== identity.principalId) throw denied();
       contextGrants.set(identity.requestContext, identity.principalId);
       if (!latest) verified.set(tokenHash, identity);
-      return {principalId: identity.principalId, requestContext: identity.requestContext};
+      return Object.freeze({principalId: identity.principalId, requestContext: identity.requestContext,
+        scopes: identity.scopes, expiresAt: identity.expiresAt});
     } catch (error) {
       await retire(tokenHash);
       throw error instanceof HttpAuthenticationError && error.code === 'FORBIDDEN' ?
         new HttpAuthenticationError('FORBIDDEN') : denied();
     }
+  }
+
+  // Trusted resource composition only. Scopes and expiry are returned after
+  // full provider/claim policy checks; the public request context stays opaque.
+  async function authenticate(request) {
+    const {principalId, requestContext} = await authenticateGrant(request);
+    return {principalId, requestContext};
   }
 
   function wrapFetch(next) {
@@ -223,5 +239,5 @@ export function createOAuthResource({resource, issuers, scopesSupported = ['brow
     return {isError: true, structuredContent: {error: {code: forbidden ? 'FORBIDDEN' : 'AUTH_REQUIRED', message}},
       content: [{type: 'text', text: message}], _meta: {'mcp/www_authenticate': [challenge(code)]}};
   }
-  return Object.freeze({authenticate, wrapFetch, metadataUrl, toolSecuritySchemes, toolAuthError});
+  return Object.freeze({authenticate, authenticateGrant, wrapFetch, metadataUrl, toolSecuritySchemes, toolAuthError});
 }

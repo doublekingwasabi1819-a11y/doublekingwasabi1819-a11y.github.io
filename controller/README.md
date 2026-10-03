@@ -34,6 +34,9 @@ remains separate in draft PR #15; this package has no static dependency on it.
 - An OAuth protected-resource adapter with discovery metadata, verified token
   policy and authentication challenges. It requires an external OAuth provider
   and explicit host integration; it is not an authorization server.
+- An explicit MCP-only OAuth grant bridge to the existing private host, with
+  per-tool scope checks, bounded internal grants and lifecycle cleanup. Relay
+  discovery uses public SDK handlers to carry top-level tool security metadata.
 - A controller-only Docker recipe and CI workflow requiring the actual pinned
   Chromium fixture test on a supported non-root host. Neither deploys a service.
 
@@ -48,8 +51,8 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm test
 ```
 
-Unit/protocol checks use controlled fake drivers. The HTTP suite includes 18
-tests, including a real local HTTP MCP client exchange; that does not launch
+Unit/protocol checks use controlled fake drivers. The HTTP suite includes
+a real local HTTP MCP client exchange; that does not launch
 Chromium. The Relay driver's 27 source contract tests verify request policy,
 identity binding, stale handles, screenshot masks and profile lifecycle without
 logging in to Relay.
@@ -202,12 +205,15 @@ module bounds verification, checks issuer/audience/time/scopes and fixes each
 principal to a frozen host-owned grant reference. It retains inactive records
 when cleanup fails and requires a safe retry.
 
-This adapter is not automatically wired into `createPrivateBrowserHost` or
-`createRelayBrowserHost`, whose opaque-grant authentication is deliberately
-fixed. Production composition still needs an explicit trusted mapping from
-verified provider identity and scopes to host grants, the same live worker/run
-authorization, and expiry/revocation cleanup. Never forward an incoming OAuth
-token to Relay. Multiple grants for the same worker/run share its browser;
+`authenticateGrant(request)` returns the already-verified principal, frozen
+identity context, scopes and expiry for the explicit bridge. The existing
+`authenticate(request)` keeps its original principal/context result shape.
+
+The resource adapter can be explicitly composed through `oauth-bridge.mjs`;
+`createPrivateBrowserHost` and `createRelayBrowserHost` retain their fixed
+opaque-grant authentication. Production still needs the trusted provider and
+permanent scope-limited worker-reference mapping. Never forward an incoming
+OAuth token to Relay. Multiple grants for the same worker/run share its browser;
 revocation can conservatively close that run. These tests do not prove separate
 per-OAuth-grant browser isolation.
 
@@ -219,12 +225,50 @@ forwarded headers. Provider and cleanup hooks need their own cancellation and
 deadlines. A development tunnel still needs a persistent local host and an
 approved connection; it does not supply an identity provider.
 
-The pinned SDK's public tool configuration does not expose top-level
-`securitySchemes`; `_meta.securitySchemes` is exercised on its modern and legacy
-wire formats. Actual ChatGPT account linking and tool discovery must be verified
-with a supported metadata path before claiming plugin compatibility. No private
-SDK internals are patched. The resource tests use a controlled verifier and
-trusted HTTPS URL mapping, not real token signatures, TLS or account linking.
+The Relay tool registry uses the pinned SDK's public `server.setRequestHandler`
+API after all fixed tool registrations to publish immutable descriptors with
+top-level `securitySchemes` and their `_meta` mirror. High-level SDK validation
+still handles tool calls. Fixture discovery is unchanged. Combined direct tools
+declare both `browser:control` and the applicable `relay:read` or `relay:write`
+scope. Raw modern and legacy HTTP wire checks cover these extension fields;
+the JavaScript client's parsed DTO may omit them. Do not dynamically change
+this static registry without updating the exact descriptors. No private SDK
+internals are patched. Actual ChatGPT account linking and invocation remain
+unverified; controlled verifiers and HTTPS URL mapping do not prove real token
+signatures, TLS or login.
+
+## Explicit OAuth grant bridge
+
+`createOAuthGrantBridge` composes the resource policy with a supplied reviewed
+private host. It serves only the exact MCP endpoint and protected-resource
+metadata, with no listener or viewer login flow. The trusted HTTPS front end
+must preserve the approved URL/Host; client-supplied forwarded headers cannot
+select it. Configure the supplied private host to accept that same origin.
+
+For each request, verified token policy and required tool scopes must pass
+before `resolveHostReference` runs. That hook returns a frozen server-owned
+reference permanently tied to the same worker/run and permitted scopes. The
+host's Relay credential resolver must intersect those scopes with live delegated
+permissions on every use. Browser tools require `browser:control`; direct read
+and write tools additionally require `relay:read` and `relay:write` respectively.
+The bridge cannot turn a browser-only connection into direct write authority.
+
+The bridge mints separate opaque private-host grants, bounded by OAuth expiry.
+Their bearer values stay only in bounded bridge process memory for internal
+forwarding; the private grant registry itself stores digests. They are never
+returned, persisted, logged or derived from incoming OAuth/Relay credentials.
+Late mapping, expiry, revocation and failed cleanup must retain the lifecycle
+constraints documented in the module. Provider revocation needs a trusted
+notification hook even when no further client request arrives.
+
+Call `bridge.revokeContext(identityContext)` from that trusted hook. Failed
+cleanup returns `isError: true`, keeps the connection inactive and retains its
+capacity slot for a later cleanup retry. Mapping, request-body reads, forwarding
+and cleanup have bounded deadlines; a timed-out action is not retried.
+
+The private viewer retains its separate opaque connection credential and does
+not receive the OAuth bearer. This source does not implement an authorization
+server, public TLS hosting, real Relay delegation or ChatGPT installation.
 
 ## Fixture and Relay drivers
 

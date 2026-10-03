@@ -1,14 +1,7 @@
 import {McpServer, fromJsonSchema} from '@modelcontextprotocol/server';
 import {StdioServerTransport} from '@modelcontextprotocol/server/stdio';
 import {browserTools} from './core.mjs';
-
-const relayDescriptions = {
-  browser_open: 'Open this host-approved Relay worker workspace. It permits only navigation, refresh and masked screenshots; websites, identity and profiles are configured by the trusted host.',
-  browser_observe: 'Observe this worker’s allowed Relay navigation and Refresh controls. Returns bounded opaque targets, excluding private messages and credential fields.',
-  browser_click: 'Click one advertised Relay navigation or Refresh control using the current observation. Returns a fresh observation. Never retry an uncertain click automatically.',
-  browser_screenshot: 'Capture this worker’s masked Relay workspace using a current observation. Private content and credential fields are hidden.',
-  browser_close: 'Close this worker’s host-approved Relay browser session.'
-};
+import {installRelayToolMetadata, relayBrowserToolDescriptors} from './mcp-tool-metadata.mjs';
 
 /**
  * MCP seam. requestContext and target are configured by the trusted local host,
@@ -28,8 +21,7 @@ export function createControllerMcp({controller, requestContext, target = 'fixtu
     {maxToolInputElements: target === 'relay' ? 128 : 32}
   );
 
-  for (const tool of browserTools) {
-    if (target === 'relay' && tool.name === 'browser_fill') continue;
+  for (const tool of target === 'relay' ? relayBrowserToolDescriptors : browserTools) {
     const annotations = {
       ...structuredClone(tool.annotations || {}),
       openWorldHint: target === 'relay',
@@ -39,10 +31,11 @@ export function createControllerMcp({controller, requestContext, target = 'fixtu
     };
     server.registerTool(tool.name, {
       description: target === 'fixture' ? `${tool.description} This connection serves only the local test fixture.` :
-        relayDescriptions[tool.name],
+        tool.description,
       annotations,
       inputSchema: fromJsonSchema(structuredClone(tool.inputSchema)),
-      ...(tool.outputSchema ? {outputSchema: fromJsonSchema(structuredClone(tool.outputSchema))} : {})
+      ...(tool.outputSchema ? {outputSchema: fromJsonSchema(structuredClone(tool.outputSchema))} : {}),
+      ...(target === 'relay' ? {_meta: structuredClone(tool._meta)} : {})
     }, async args => {
       try {
         return await controller.callTool({name: tool.name, arguments: args}, requestContext);
@@ -58,6 +51,7 @@ export function createControllerMcp({controller, requestContext, target = 'fixtu
       }
     });
   }
+  if (target === 'relay') installRelayToolMetadata(server, relayBrowserToolDescriptors);
   return server;
 }
 
