@@ -2,7 +2,9 @@
 export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   let inbox={contacts:[],threads:[],unreadCount:0},loaded=false,polling=false,selected=null,messages=[],hasMore=false,error='',generation=0;
-  const drafts=new Map(),scrollPositions=new Map();
+  const drafts=new Map(),scrollPositions=new Map(),confirmedReads=new Map();
+  let readTimer,reading=null,readRevision=0,pollAgain=false;
+  const readError='Could not mark messages read. Use Refresh to retry.';
   const paintedHTML=new WeakMap(),pendingOptions=new WeakMap();
   const key=(a,b)=>[a,b].sort().join(':');
   const person=id=>id===getUser()?.id?getUser():inbox.contacts.find(c=>c.id===id);
@@ -56,6 +58,58 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
     }
   }
   function paintSidebar(){patchChildren(document.querySelector('#dm-sidebar'),sidebar());bindSidebar();}
+  function visibleIncomingIds(){
+    const list=active()?.querySelector('#dm-messages');
+    if(!isLive()||document.hidden||!selected||!list?.isConnected||document.querySelector('#modal')?.open||document.querySelector('.sidebar.open'))return [];
+    // The phone keyboard/pinch zoom can shrink the visible viewport without
+    // changing innerHeight. Don't acknowledge messages behind that keyboard.
+    const viewport=window.visualViewport,viewportTop=viewport?.offsetTop||0,viewportLeft=viewport?.offsetLeft||0;
+    const header=document.querySelector('.topbar'),headerBox=header?.getBoundingClientRect(),position=header?getComputedStyle(header).position:'';
+    const coveredTop=headerBox&&['fixed','sticky'].includes(position)&&headerBox.top<=viewportTop?headerBox.bottom:viewportTop;
+    const box=list.getBoundingClientRect(),top=Math.max(viewportTop,coveredTop,box.top),bottom=Math.min(viewportTop+(viewport?.height??innerHeight),box.bottom),left=Math.max(viewportLeft,box.left),right=Math.min(viewportLeft+(viewport?.width??innerWidth),box.right);
+    if(bottom<=top||right<=left||!list.getClientRects().length)return [];
+    const nodes=new Map(Array.from(list.querySelectorAll('[data-dm-message]'),node=>[node.dataset.dmMessage,node]));
+    return incoming().filter(message=>{
+      const node=nodes.get(message.id);if(!node?.getClientRects().length)return false;
+      const rect=node.getBoundingClientRect();
+      return rect.bottom>top&&rect.top<bottom&&rect.right>left&&rect.left<right;
+    }).map(message=>message.id).slice(-100);
+  }
+  function scheduleRead(){
+    clearTimeout(readTimer);
+    if(!isLive()||document.hidden||!active())return;
+    const token=api.token,g=generation,k=draftKey(),list=document.querySelector('#dm-messages');
+    readTimer=setTimeout(()=>{
+      if(!current(token)||g!==generation||k!==draftKey()||list!==document.querySelector('#dm-messages')||reading)return;
+      const ids=visibleIncomingIds();if(ids.length)markMessagesRead(ids).catch(()=>{});
+    },250);
+  }
+  async function markMessagesRead(messageIds){
+    const token=api.token,g=generation,k=draftKey(),userId=getUser()?.id;
+    if(reading){await reading.promise.catch(()=>{});if(!current(token)||g!==generation||k!==draftKey())return;}
+    const ids=[...new Set(messageIds)].filter(id=>!confirmedReads.has(id)).slice(-100);
+    if(!ids.length||!current(token)||!userId)return;
+    const job={token,g,k,promise:null};let succeeded=false;
+    job.promise=(async()=>{
+      try{
+        const result=await api.call('dm.read',{messageIds:ids});
+        if(!current(token)||g!==generation||getUser()?.id!==userId)return;
+        const readAt=new Date().toISOString();ids.forEach(id=>confirmedReads.set(id,readAt));readRevision++;
+        inbox.unreadCount=Number.isSafeInteger(result?.unreadCount)&&result.unreadCount>=0?result.unreadCount:Math.max(0,inbox.unreadCount-ids.length);
+        inbox.threads=inbox.threads.map(thread=>key(thread.participantA,thread.participantB)===k?{...thread,unreadCount:Math.max(0,thread.unreadCount-ids.length)}:thread);
+        if(draftKey()===k){messages=messages.map(message=>confirmedReads.has(message.id)?{...message,readAt:confirmedReads.get(message.id)}:message);paintMessages();const node=document.querySelector('#dm-thread-error');if(node?.textContent===readError)node.textContent='';}
+        badges();if(active())paintSidebar();succeeded=true;
+        if(polling)pollAgain=true;else poll();
+      }catch(err){
+        if(g!==generation||getUser()?.id!==userId)return;
+        if(['SESSION','UNAUTHORIZED','STALE_SESSION','DELETED'].includes(err.code)&&(!api.token||api.token===token)){reset();onSessionError();return;}
+        if(!current(token))return;
+        if(draftKey()===k){const node=document.querySelector('#dm-thread-error');if(node)node.textContent=readError;}
+        throw err;
+      }finally{if(reading===job){reading=null;if(succeeded)scheduleRead();}}
+    })();
+    reading=job;return job.promise;
+  }
   function badges(){
     const n=inbox.unreadCount;
     document.querySelectorAll('[data-dm-count]').forEach(el=>{el.textContent=n>99?'99+':n;el.hidden=!n;});
@@ -78,12 +132,12 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   }
   function paintMessages(){if(!active()||!selected)return;patchChildren(document.querySelector('#dm-messages'),messagesHTML());const read=document.querySelector('[data-dm-action="read"]');if(read)read.hidden=!incoming().length;}
   async function poll(){
-    if(!isLive()||polling)return;const token=api.token,g= generation;polling=true;
-    try{const next=await api.call('dm.inbox');if(!current(token)||g!==generation)return;const prior=inbox.unreadCount;inbox=next;loaded=true;error='';badges();
+    if(!isLive()||polling)return;const token=api.token,g=generation,revision=readRevision,userId=getUser()?.id;polling=true;
+    try{const next=await api.call('dm.inbox');if(!current(token)||g!==generation)return;if(revision!==readRevision){pollAgain=true;return;}const prior=inbox.unreadCount;inbox=next;loaded=true;error='';badges();
       if(next.unreadCount>prior)toast(`${next.unreadCount} unread private message${next.unreadCount===1?'':'s'}. Open Inbox to read.`);
       if(active()){paintSidebar();if(selected)await loadThread(false);else patchChildren(document.querySelector('#dm-thread-area'),threadHTML());}
-    }catch(e){if(!current(token)||g!==generation)return;error=e.message;if(['SESSION','UNAUTHORIZED','STALE_SESSION','DELETED'].includes(e.code)){reset();onSessionError();return;}if(active())document.querySelector('#dm-load-error').textContent=e.message;}
-    finally{if(g===generation)polling=false;}
+    }catch(e){if(g!==generation||getUser()?.id!==userId)return;if(['SESSION','UNAUTHORIZED','STALE_SESSION','DELETED'].includes(e.code)&&(!api.token||api.token===token)){reset();onSessionError();return;}if(!current(token))return;error=e.message;if(active())document.querySelector('#dm-load-error').textContent=e.message;}
+    finally{if(g===generation){polling=false;if(pollAgain){pollAgain=false;poll();}}}
   }
   function rememberScroll(list,k=draftKey()){if(list&&k)scrollPositions.set(k,{top:list.scrollTop,bottom:list.scrollHeight-list.scrollTop-list.clientHeight<64});}
   function scrollLatest(){const list=document.querySelector('#dm-messages');if(list){list.scrollTop=list.scrollHeight;rememberScroll(list);}}
@@ -98,8 +152,10 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
     if(older){const seen=new Set(messages.map(m=>m.id));messages=[...r.messages.filter(m=>!seen.has(m.id)),...messages];hasMore=r.hasMore;}
     else if(messages.length>50){const old=new Map(messages.map(m=>[m.id,m]));r.messages.forEach(m=>old.set(m.id,m));messages=[...old.values()].sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));}
     else {messages=r.messages;hasMore=r.hasMore;}
+    messages=messages.map(message=>confirmedReads.has(message.id)?{...message,readAt:confirmedReads.get(message.id)}:message);
     paintMessages();
     if(list?.isConnected){if(older)list.scrollTop=previousTop+list.scrollHeight-previousHeight;else if(initial||atBottom)scrollLatest();rememberScroll(list,k);}
+    scheduleRead();
   }
   async function selectThread(t){selected={participantA:t.participantA,participantB:t.participantB};messages=[];hasMore=false;error='';paint();try{await loadThread(false,true);}catch(e){error=e.message;const el=document.querySelector('#dm-thread-error');if(el)el.textContent=error;}}
   function bindSidebar(){
@@ -108,12 +164,12 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
   }
   function bind(){
     bindSidebar();const root=active();if(!root)return;
-    const list=root.querySelector('#dm-messages'),scrollKey=draftKey();if(list)list.onscroll=()=>rememberScroll(list,scrollKey);
+    const list=root.querySelector('#dm-messages'),scrollKey=draftKey();if(list)list.onscroll=()=>{rememberScroll(list,scrollKey);scheduleRead();};
     root.onclick=async e=>{const button=e.target.closest('[data-dm-action]');if(!button)return;const action=button.dataset.dmAction,hadFocus=document.activeElement===button,focusToken=api.token,focusGeneration=generation,focusThread=draftKey();button.disabled=true;try{
       if(action==='latest')scrollLatest();
       if(action==='refresh'){await poll();await loadThread();}
       if(action==='older')await loadThread(true);
-      if(action==='read'){const ids=incoming().map(m=>m.id).slice(-100),token=api.token,g=generation;await api.call('dm.read',{messageIds:ids});if(!current(token)||g!==generation)return;messages=messages.map(m=>ids.includes(m.id)?{...m,readAt:new Date().toISOString()}:m);paintMessages();await poll();toast('Displayed messages marked read');}
+      if(action==='read'){await markMessagesRead(incoming().map(m=>m.id));if(current(focusToken)&&focusGeneration===generation&&focusThread===draftKey())toast('Displayed messages marked read');}
     }catch(e){const el=document.querySelector('#dm-thread-error');if(el)el.textContent=e.message;}finally{
       button.disabled=false;
       if(hadFocus&&current(focusToken)&&focusGeneration===generation&&focusThread===draftKey()&&(document.activeElement===document.body||document.activeElement===button)){
@@ -131,10 +187,15 @@ export function createInbox({api,getUser,isLive,toast,onSessionError}) {
     };
   }
   function render(){return `<div class="page-title"><div><div class="eyebrow">CODERCODE / STUDIO</div><h1>Private inbox</h1><p class="subtitle">${getUser()?.role==='manager'?'You can read every private conversation in your studio.':'Private conversations with your workers and manager.'}</p></div></div><div class="callout dm-privacy">Only the two participants and the studio manager can read a conversation. Unread alerts update while Relay is open.</div>${!isLive()?'<div class="empty"><h3>Sign in to use private messages</h3><p>Private inboxes are available for real worker and manager accounts.</p></div>':`<section id="dm-root" class="panel dm-layout"><aside id="dm-sidebar" class="dm-sidebar">${loaded?sidebar():'<p>Loading your inbox…</p>'}</aside><div id="dm-thread-area">${threadHTML()}</div></section><p id="dm-load-error" class="form-error" role="alert">${esc(error)}</p>`}`;}
-  function mount(){badges();if(!isLive())return;bind();const select=document.querySelector('#dm-recipient'),userId=getUser()?.id;if(select)select.value=selected?.participantA===userId?selected.participantB:selected?.participantB===userId?selected.participantA:'';restoreScroll();if(!loaded)poll();}
-  function reset(){generation++;inbox={contacts:[],threads:[],unreadCount:0};selected=null;messages=[];hasMore=false;loaded=false;polling=false;error='';drafts.clear();scrollPositions.clear();badges();}
+  function mount(){badges();if(!isLive())return;bind();const select=document.querySelector('#dm-recipient'),userId=getUser()?.id;if(select)select.value=selected?.participantA===userId?selected.participantB:selected?.participantB===userId?selected.participantA:'';restoreScroll();scheduleRead();if(!loaded)poll();}
+  function reset(){generation++;clearTimeout(readTimer);reading=null;readRevision++;pollAgain=false;inbox={contacts:[],threads:[],unreadCount:0};selected=null;messages=[];hasMore=false;loaded=false;polling=false;error='';drafts.clear();scrollPositions.clear();confirmedReads.clear();badges();}
   setInterval(()=>{if(!document.hidden)poll();},10000);
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
+  document.addEventListener('visibilitychange',()=>{scheduleRead();if(!document.hidden)poll();});
+  window.addEventListener('scroll',scheduleRead,{passive:true});
+  window.addEventListener('resize',scheduleRead,{passive:true});
+  window.visualViewport?.addEventListener('resize',scheduleRead,{passive:true});
+  window.visualViewport?.addEventListener('scroll',scheduleRead,{passive:true});
+  document.addEventListener('click',scheduleRead);
   return {render,mount,reset,poll};
 }
 
