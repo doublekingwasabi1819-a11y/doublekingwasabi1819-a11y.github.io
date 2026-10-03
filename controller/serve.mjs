@@ -18,7 +18,9 @@ export function createPrivateBrowserHost({resolveBinding,authorizeAction,createD
  const controller=createBrowserController({...controllerOptions,authorize:context=>grants.authorize(context),authorizeAction:(action,context)=>grants.withContext(context,reference=>authorizeAction(action,reference)),createDriver});
  grants=createBrowserGrants({resolveBinding,onRevoke:async context=>{const result=await controller.revokeContext(context);if(result.isError)throw new Error('Browser cleanup failed.');}});
  const http=createControllerHttp({...httpOptions,controller,authenticate:request=>grants.authenticate(request),
-  serverFactory:context=>serverFactory?serverFactory({controller,requestContext:context,target}):createControllerMcp({controller,requestContext:context,target}),
+  serverFactory:context=>serverFactory?serverFactory({controller,requestContext:context,target,
+   withRequestContext:async callback=>{if(typeof callback!=='function')throw new TypeError('A trusted context callback is required.');const binding=await grants.authorize(context);const result=await grants.withContext(context,reference=>callback(reference,binding));await grants.authorize(context);return result;}
+  }):createControllerMcp({controller,requestContext:context,target}),
   publicRoutes:{'/viewer':createViewerShell({target})},routes:createViewerRoutes(controller)});
  return Object.freeze({
   issueGrant:options=>grants.issue(options),revokeGrant:id=>grants.revoke(id),

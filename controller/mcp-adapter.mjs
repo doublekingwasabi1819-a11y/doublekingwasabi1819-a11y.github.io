@@ -25,7 +25,7 @@ export function createControllerMcp({controller, requestContext, target = 'fixtu
 
   const server = new McpServer(
     {name: target === 'fixture' ? 'relay-browser-fixture' : 'relay-browser-controller', version: '0.1.0'},
-    {maxToolInputElements: 32}
+    {maxToolInputElements: target === 'relay' ? 128 : 32}
   );
 
   for (const tool of browserTools) {

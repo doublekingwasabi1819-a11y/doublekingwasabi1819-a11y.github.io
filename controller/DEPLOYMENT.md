@@ -39,6 +39,12 @@ Artifacts expire after three days. Do not broaden the upload to profiles,
 browser traces, videos, logs, environment files, or arbitrary test output. These
 timings are a smoke measurement, not proof of superiority over another browser.
 
+The [foundation run](https://github.com/doublekingwasabi1819-a11y/doublekingwasabi1819-a11y.github.io/actions/runs/37099102990)
+passed 161 tests with no skips at
+`9d08d94fdc461d4282d35d3f57ad5249321f61d3`, including both real Chromium tests.
+Later source changes require their own passing exact-head run. This verifies
+controlled fixture behavior, not a deployed Relay browser or ChatGPT connection.
+
 ## Container fixture tests
 
 The Dockerfile uses the official Playwright 1.62.1 Noble image, matching the npm
@@ -108,6 +114,26 @@ or an approved local development client. A successful HTTP/MCP test does not
 prove ChatGPT has discovered and invoked the installed plugin.
 
 ## Before real Relay hosting
+
+GitHub Pages cannot run persistent Chromium. This source needs a separately
+provisioned persistent Linux service with a non-root Chromium sandbox, private
+profile storage, process supervision and approved outbound access. The workflow
+runner is temporary test infrastructure, not that service.
+
+`relay-host.mjs` prepares the combined Relay/browser tools behind host-issued
+opaque grants. `oauth-resource.mjs` prepares protected-resource metadata and
+verified-token authentication but is not automatically connected to that host.
+Use an external OAuth 2.1 provider with S256 PKCE, authorization-server discovery,
+client registration/metadata and the exact MCP resource audience. A reviewed
+host bridge must map verified identities/scopes to stable grants and share live
+worker authorization and expiry/revocation cleanup across browser and direct
+tools. Never pass OAuth bearer credentials to Relay. See README for the pinned
+SDK's top-level tool-metadata limitation and required ChatGPT linking proof.
+
+A secure MCP development tunnel is another endpoint option after a persistent
+host exists. It requires an approved Platform/workspace association and private
+tunnel credentials; it does not provision Chromium or OAuth. No tunnel is
+created or connected by this repository.
 
 The host must supply and review its trusted authorization hooks, consent/action
 policy, approved Relay origin policy, worker profile isolation, revocation and

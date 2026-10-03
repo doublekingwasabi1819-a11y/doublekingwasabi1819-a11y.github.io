@@ -28,6 +28,12 @@ remains separate in draft PR #15; this package has no static dependency on it.
 - Read/navigation-only Relay driver source with exact static assets and backend
   read payloads allowlisted. It requires explicit browser delegation and live
   worker identity; no real credential is bundled.
+- A combined Relay host that can register the five browser tools and five
+  reviewed direct Relay tools through a host-injected adapter. Every result is
+  checked against the grant's anchored worker/run before it reaches the client.
+- An OAuth protected-resource adapter with discovery metadata, verified token
+  policy and authentication challenges. It requires an external OAuth provider
+  and explicit host integration; it is not an authorization server.
 - A controller-only Docker recipe and CI workflow requiring the actual pinned
   Chromium fixture test on a supported non-root host. Neither deploys a service.
 
@@ -55,15 +61,19 @@ npx --no-install playwright install --with-deps chromium
 RELAY_REQUIRE_CHROMIUM=1 RELAY_TEST_ARTIFACTS=1 npm test
 ```
 
-The normal local suite may skip the real fixture test when the pinned binary is
+The normal local suite may skip the two real fixture tests when the pinned binary is
 missing. With `RELAY_REQUIRE_CHROMIUM=1`, missing binaries fail. An installed
 browser that cannot launch with its sandbox also fails. Do not disable the
 sandbox or change this workspace's kernel/AppArmor/network policy as a fallback.
 
-Real Chromium execution has not been verified in this workspace: the official
-download did not yield an installable archive, and this runtime does not support
-the required namespace isolation. Only a passing exact-commit CI/host run can
-provide that evidence. Fixture artifacts are limited to a masked PNG and bounded
+The foundation's [sandboxed Chromium CI run](https://github.com/doublekingwasabi1819-a11y/doublekingwasabi1819-a11y.github.io/actions/runs/37099102990)
+passed all 161 tests with zero skips at commit
+`9d08d94fdc461d4282d35d3f57ad5249321f61d3`. It exercised actual DOM actions,
+the cursor, screenshot masking, persistent fixture profiles, HTTP/MCP, the
+rendered viewer and revocation cleanup. The masked PNG was visually inspected.
+This workspace itself lacks a usable pinned binary and required namespace
+isolation. Changes after that foundation require their own exact-commit CI run.
+Fixture artifacts are limited to a masked PNG and bounded
 numeric timings; no cookies, tokens, profiles, real-site contents or comparative
 performance claims are included. See [DEPLOYMENT.md](./DEPLOYMENT.md) for commands
 and the host/access decision required before remote activation.
@@ -163,6 +173,59 @@ The production host must invoke the API with its own reviewed hooks; no CLI
 option grants real account access. See [DEPLOYMENT.md](./DEPLOYMENT.md) for the
 fixture commands and private host requirements.
 
+## Combined Relay tools
+
+`createRelayBrowserHost({profileRoot, resolveBinding, resolveWorkerSession,
+authorizeAction, relayAdapter, ...limits})` composes the private host with the
+fixed Relay browser driver. The optional injected adapter is
+`{tools: relayTools, callTool: relayIntegration.callTool}` from reviewed PR #15.
+Omitting it exposes only the five navigation/browser tools. Imports create no
+listener, credentials or account delegation.
+
+The direct tools cover identity, inbox, thread, send and mark-read. Their strict
+schemas, owner-bound output validation and read/write scopes remain separate
+from browser navigation. They receive the original host-owned grant reference,
+never the incoming MCP bearer credential. The reference and its resolver must
+remain bound to the same worker and run for their lifetime. Reauthorization
+before and after calls discards results after revocation; ambiguous sends are
+not retried automatically. The composition's HTTP/MCP tests use controlled
+adapters, not real Relay accounts.
+
+## OAuth protected-resource seam
+
+`createOAuthResource({resource, issuers, verifyAccessToken, onRevoke, ...limits})`
+provides an authenticator, `wrapFetch(next)`, RFC 9728 metadata, scope challenges
+and tool authentication-error metadata. `resource` and issuer IDs must be exact
+HTTPS URLs. The trusted verifier must cryptographically verify or securely
+introspect tokens on every request; decoding JWT claims is insufficient. The
+module bounds verification, checks issuer/audience/time/scopes and fixes each
+principal to a frozen host-owned grant reference. It retains inactive records
+when cleanup fails and requires a safe retry.
+
+This adapter is not automatically wired into `createPrivateBrowserHost` or
+`createRelayBrowserHost`, whose opaque-grant authentication is deliberately
+fixed. Production composition still needs an explicit trusted mapping from
+verified provider identity and scopes to host grants, the same live worker/run
+authorization, and expiry/revocation cleanup. Never forward an incoming OAuth
+token to Relay. Multiple grants for the same worker/run share its browser;
+revocation can conservatively close that run. These tests do not prove separate
+per-OAuth-grant browser isolation.
+
+An external OAuth 2.1 provider must supply authorization, token exchange,
+S256 PKCE, authorization-server discovery, client registration/metadata and
+resource audience enforcement. The source supplies none of those flows. An
+HTTPS front end must construct trusted request URLs without trusting arbitrary
+forwarded headers. Provider and cleanup hooks need their own cancellation and
+deadlines. A development tunnel still needs a persistent local host and an
+approved connection; it does not supply an identity provider.
+
+The pinned SDK's public tool configuration does not expose top-level
+`securitySchemes`; `_meta.securitySchemes` is exercised on its modern and legacy
+wire formats. Actual ChatGPT account linking and tool discovery must be verified
+with a supported metadata path before claiming plugin compatibility. No private
+SDK internals are patched. The resource tests use a controlled verifier and
+trusted HTTPS URL mapping, not real token signatures, TLS or account linking.
+
 ## Fixture and Relay drivers
 
 `createFixtureDriverFactory({profileRoot, headless})` is fixed to the bundled
@@ -204,16 +267,17 @@ Review retention, revocation, resource limits and recovery across host restarts.
 
 ## Remaining proof and activation steps
 
-1. Pass the required sandboxed Chromium fixture test on the exact reviewed
-   commit; visually inspect the masked screenshot/cursor and restart isolation.
+1. Keep the required sandboxed Chromium checks passing on the exact reviewed
+   commit; inspect the masked screenshot/cursor and restart isolation evidence.
 2. Exercise the Relay source adapter against controlled Relay fixtures, then
    review live delegation/origin/action policy before any real account is used.
 3. Provision private host/storage, process supervision, OS egress restrictions,
    authenticated viewer and host-hook deadlines. Choose the hostname, audience,
    TLS/authentication and any provider cost before activating remote access.
-4. Connect the approved HTTPS MCP endpoint or secure development tunnel in
-   ChatGPT, inspect its tools and verify an actual ChatGPT invocation. Local
-   SDK/HTTP tests do not prove a plugin is connected.
+4. Configure an external OAuth provider and reviewed resource/host composition.
+   Connect the approved HTTPS MCP endpoint or secure development tunnel in
+   ChatGPT, inspect its tools and verify account linking and an actual invocation.
+   Local SDK/HTTP tests do not prove a plugin is connected.
 5. Benchmark the same tasks for correctness, latency, stale-state recovery and
    failure handling before comparing this controller with ChatGPT or TinyFish.
 
