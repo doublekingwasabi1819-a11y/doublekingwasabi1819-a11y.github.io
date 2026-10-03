@@ -5,12 +5,12 @@ const opaque={type:'string',minLength:1,maxLength:128,pattern:'^[A-Za-z0-9_-]+$'
 const object=(properties={},required=[])=>({type:'object',properties,required,additionalProperties:false});
 const session={session_id:opaque},observed={...session,observation_id:opaque};
 const rows=[
-  ['browser_open','Open the server-owned local test fixture. No website URL or account input.',object(),false,false,false],
-  ['browser_observe','Read a fresh bounded observation of this worker’s fixture.',object(session,['session_id']),true,true,false],
+  ['browser_open','Open this worker’s server-approved browser workspace. Website, identity and profile configuration come from the trusted host.',object(),false,false,false],
+  ['browser_observe','Read a fresh bounded observation of this worker’s server-approved browser workspace.',object(session,['session_id']),true,true,false],
   ['browser_click','Click one target from the current observation; returns a new observation. Never retry an uncertain click automatically.',object({...observed,target_id:opaque},['session_id','observation_id','target_id']),false,false,true],
-  ['browser_fill','Fill one non-secret fixture textbox from the current observation. Do not pass credentials.',object({...observed,target_id:opaque,text:{type:'string',maxLength:4000}},['session_id','observation_id','target_id','text']),false,false,true],
-  ['browser_screenshot','Capture a masked fixture image using a current observation.',object(observed,['session_id','observation_id']),true,true,false],
-  ['browser_close','Close this worker’s fixture browser session.',object(session,['session_id']),false,true,false]
+  ['browser_fill','Fill one host-permitted non-secret textbox from the current observation. Do not pass credentials.',object({...observed,target_id:opaque,text:{type:'string',maxLength:4000}},['session_id','observation_id','target_id','text']),false,false,true],
+  ['browser_screenshot','Capture a masked workspace image using a current observation.',object(observed,['session_id','observation_id']),true,true,false],
+  ['browser_close','Close this worker’s server-approved browser session.',object(session,['session_id']),false,true,false]
 ];
 export const browserTools=rows.map(([name,description,inputSchema,readOnlyHint,idempotentHint,destructiveHint])=>({
   name,description,inputSchema:structuredClone(inputSchema),
@@ -23,6 +23,8 @@ const plain=x=>x&&typeof x==='object'&&!Array.isArray(x)&&Object.getPrototypeOf(
 const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const safe=error=>new BrowserControllerError(Object.hasOwn(messages,error?.code)?error.code:'INTERNAL');
 const result=value=>({structuredContent:value,content:[{type:'text',text:JSON.stringify(value)}]});
+function imageResult(image,metadata){if(!plain(image)||image.mimeType!=='image/png'||typeof image.data!=='string'||!image.data.length||image.data.length>8000000||!/^[A-Za-z0-9+/]+={0,2}$/.test(image.data))fail('INTERNAL');return {structuredContent:metadata,content:[{type:'image',mimeType:'image/png',data:image.data}]};}
+function errorResult(error){const e=safe(error);return {isError:true,structuredContent:{error:{code:e.code,message:e.message}},content:[{type:'text',text:e.message}]};}
 const key=b=>JSON.stringify([b.workspaceId,b.accountId]);
 const same=(a,b)=>a.workspaceId===b.workspaceId&&a.accountId===b.accountId&&a.agentId===b.agentId&&a.runId===b.runId;
 
@@ -52,33 +54,31 @@ function observationFor(value,observationId,at) {
   return {public:{id:observationId,title:value.title,status:value.status,targets},at};
 }
 
-/** Trusted host hooks only. This prototype exposes a fixed fixture, not arbitrary websites. */
+/** Trusted host hooks choose an approved workspace; tool inputs cannot select websites or profiles. */
 export function createBrowserController({authorize,authorizeAction,createDriver,now=Date.now,uuid=randomUUID,maxSessions=8,observationTTL=60000}={}) {
   if(typeof authorize!=='function'||typeof createDriver!=='function'||(authorizeAction!==undefined&&typeof authorizeAction!=='function')||typeof now!=='function'||typeof uuid!=='function'||!Number.isInteger(maxSessions)||maxSessions<1||maxSessions>64||!Number.isFinite(observationTTL)||observationTTL<=0||observationTTL>600000)throw new TypeError('Valid trusted controller hooks and limits are required.');
   const sessions=new Map(),owners=new Map(),queues=new Map(),knownContexts=new WeakMap(),quarantined=new Set();
   let reservations=0,closed=false;
   async function auth(context){try{return bindingFor(await authorize(context));}catch(e){if(e instanceof BrowserControllerError)throw safe(e);if(e?.code==='STALE_SESSION')fail('STALE_SESSION');if(e?.code==='FORBIDDEN')fail('FORBIDDEN');fail('AUTH_REQUIRED');}}
   function enqueue(owner,operation){const prior=queues.get(owner)||Promise.resolve();const run=prior.catch(()=>{}).then(operation);const tail=run.catch(()=>{});queues.set(owner,tail);tail.finally(()=>{if(queues.get(owner)===tail)queues.delete(owner);});return run;}
-  async function dispose(s){s.observation=null;s.quarantined=true;try{await s.driver.close();}catch{if(sessions.get(s.id)!==s)quarantined.add(s);return false;}if(sessions.get(s.id)===s)sessions.delete(s.id);if(owners.get(key(s.binding))===s.id)owners.delete(key(s.binding));quarantined.delete(s);return true;}
-  async function recheck(initial,context,s){let current;try{current=await auth(context);}catch(error){if(s)await dispose(s);throw error;}if(!same(initial,current)){if(s)await dispose(s);fail('STALE_SESSION');}return current;}
-  async function observe(s){s.observation=null;const next=observationFor(await s.driver.observe(),uuid(),now());if(!id(next.public.id))fail('INTERNAL');s.observation=next;return structuredClone(next.public);}
+  async function dispose(s){if(s.disposed)return true;s.observation=null;s.quarantined=true;try{await s.driver.close();}catch{if(sessions.get(s.id)!==s)quarantined.add(s);return false;}s.disposed=true;if(sessions.get(s.id)===s)sessions.delete(s.id);if(owners.get(key(s.binding))===s.id)owners.delete(key(s.binding));quarantined.delete(s);return true;}
+  async function recheck(initial,context,s){let current;try{current=await auth(context);}catch(error){if(s&&same(s.binding,initial))await dispose(s);throw error;}if(!same(initial,current)){if(s&&same(s.binding,initial))await dispose(s);fail('STALE_SESSION');}return current;}
+  async function driverOperation(s,operation){try{return await operation();}catch(error){if(['AUTH_REQUIRED','FORBIDDEN','STALE_SESSION'].includes(error?.code))await dispose(s);throw error;}}
+  async function observe(s){s.observation=null;const next=observationFor(await driverOperation(s,()=>s.driver.observe()),uuid(),now());if(!id(next.public.id))fail('INTERNAL');s.observation=next;return structuredClone(next.public);}
   function currentObservation(s,args){const o=s.observation;if(!o||o.public.id!==args.observation_id||now()-o.at>observationTTL||now()<o.at)fail('STALE_OBSERVATION');return o.public;}
   async function actionPermission(name,args,binding,context){if(!authorizeAction)fail('FORBIDDEN');const permitted=await authorizeAction({name,arguments:structuredClone(args),binding},context);if(permitted!==true)fail('FORBIDDEN');}
+  async function requestIdentity(context){
+    try{const b=await auth(context);if(context&&typeof context==='object')knownContexts.set(context,b);return b;}
+    catch(error){const known=context&&typeof context==='object'?knownContexts.get(context):undefined;if(known)await enqueue(key(known),async()=>{const s=sessions.get(owners.get(key(known)));if(s&&same(s.binding,known))await dispose(s);});throw error;}
+  }
   return {
     async callTool(invocation,requestContext) {
       try {
         if(closed)fail('NOT_FOUND');
         const {name,args,mutates}=argumentsFor(invocation);
-        let initial;
-        try {initial=await auth(requestContext);}catch(error){
-          // Teardown is scoped to a previously verified HOST context, never a
-          // model-supplied session ID. Unknown callers cannot close a victim.
-          const known=requestContext&&typeof requestContext==='object'?knownContexts.get(requestContext):undefined;
-          if(known)await enqueue(known,async()=>{const s=sessions.get(owners.get(known));if(s)await dispose(s);});
-          throw error;
-        }
+        // Teardown uses a previously verified HOST context, never a model ID.
+        const initial=await requestIdentity(requestContext);
         const owner=key(initial);
-        if(requestContext&&typeof requestContext==='object')knownContexts.set(requestContext,owner);
         if(args.session_id){const candidate=sessions.get(args.session_id);if(!candidate)fail('NOT_FOUND');if(key(candidate.binding)!==owner)fail('FORBIDDEN');}
         return await enqueue(owner,async()=>{
           if(closed)fail('NOT_FOUND');
@@ -109,19 +109,52 @@ export function createBrowserController({authorize,authorizeAction,createDriver,
           if(name==='browser_observe'){const observation=await observe(s);await recheck(binding,requestContext,s);return result({sessionId:s.id,observation});}
           const observation=currentObservation(s,args);
           if(name==='browser_screenshot') {
-            const image=await s.driver.screenshot();await recheck(binding,requestContext,s);
-            if(!plain(image)||image.mimeType!=='image/png'||typeof image.data!=='string'||!image.data.length||image.data.length>8000000||!/^[A-Za-z0-9+/]+={0,2}$/.test(image.data))fail('INTERNAL');
-            return {structuredContent:{sessionId:s.id,observationId:observation.id},content:[{type:'image',mimeType:'image/png',data:image.data}]};
+            const image=await driverOperation(s,()=>s.driver.screenshot());await recheck(binding,requestContext,s);
+            return imageResult(image,{sessionId:s.id,observationId:observation.id});
           }
           const target=observation.targets.find(t=>t.id===args.target_id);if(!target)fail('STALE_OBSERVATION');
           if(name==='browser_fill'&&target.role!=='textbox')fail('VALIDATION');
           // Unknown outcome must not leave an old handle reusable.
           s.observation=null;
-          if(name==='browser_click')await s.driver.click(args.target_id);else await s.driver.fill(args.target_id,args.text);
+          if(name==='browser_click')await driverOperation(s,()=>s.driver.click(args.target_id));else await driverOperation(s,()=>s.driver.fill(args.target_id,args.text));
           const next=await observe(s);await recheck(binding,requestContext,s);
           return result({sessionId:s.id,observation:next});
         });
-      }catch(error){const e=safe(error);return {isError:true,structuredContent:{error:{code:e.code,message:e.message}},content:[{type:'text',text:e.message}]};}
+      }catch(error){return errorResult(error);}
+    },
+    /** Trusted viewer-only read. No target IDs and no refresh that invalidates
+     * an agent's current observation; the same live worker auth/queue applies. */
+    async snapshot(requestContext){
+      try{
+        if(closed)fail('NOT_FOUND');
+        const initial=await requestIdentity(requestContext),owner=key(initial);
+        return await enqueue(owner,async()=>{
+          if(closed)fail('NOT_FOUND');
+          const s=sessions.get(owners.get(owner));if(!s)fail('NOT_FOUND');
+          const b=await recheck(initial,requestContext,s);
+          if(!same(s.binding,b)){await dispose(s);fail('STALE_SESSION');}
+          if(s.quarantined)fail('INTERNAL');
+          const image=await driverOperation(s,()=>s.driver.screenshot());await recheck(b,requestContext,s);
+          return imageResult(image,{state:'open'});
+        });
+      }catch(error){return errorResult(error);}
+    },
+    /** Trusted lifecycle hook only, deliberately absent from MCP tools. A host
+     * can retire an expired/revoked grant without requiring that grant to auth.
+     * Exact last-verified binding prevents old grants closing a newer run.
+     * Invoke outside authorize/action/driver callbacks: this hook uses the same
+     * owner queue and must never be awaited from an operation holding it. */
+    async revokeContext(requestContext){
+      try{
+        const known=requestContext&&typeof requestContext==='object'?knownContexts.get(requestContext):undefined;
+        if(!known)return result({closed:false});
+        return await enqueue(key(known),async()=>{
+          const s=sessions.get(owners.get(key(known)));
+          if(!s||!same(s.binding,known)){knownContexts.delete(requestContext);return result({closed:false});}
+          if(!await dispose(s))fail('INTERNAL');
+          knownContexts.delete(requestContext);return result({closed:true});
+        });
+      }catch(error){return errorResult(error);}
     },
     async shutdown(){closed=true;await Promise.all([...queues.values()]);const outcomes=await Promise.all([...sessions.values(),...quarantined].map(dispose));if(outcomes.some(x=>x===false))throw new BrowserControllerError('INTERNAL');}
   };
