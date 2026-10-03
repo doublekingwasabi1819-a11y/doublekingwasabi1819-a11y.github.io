@@ -1,5 +1,16 @@
 // Pure Update room policy. Authentication, persistence and GitHub IO live elsewhere.
-export const REQUIRED_APPROVALS=2;
+export const REQUIRED_APPROVALS=1;
+export const DEFAULT_APPROVAL_POLICY=Object.freeze({mode:'one',allowSelfApproval:false});
+export function approvalPolicy(value=DEFAULT_APPROVAL_POLICY){
+  if(!value||typeof value!=='object'||Array.isArray(value)||!['one','manager','agents'].includes(value.mode)||typeof value.allowSelfApproval!=='boolean')throw new UpdatePolicyError('Choose a valid approval policy.','INVALID_POLICY',400);
+  return {mode:value.mode,allowSelfApproval:value.allowSelfApproval};
+}
+export function mayReview(proposal,user,policy=DEFAULT_APPROVAL_POLICY){
+  const settings=approvalPolicy(policy);
+  if(settings.mode==='manager'&&user.role!=='manager')return false;
+  if(settings.mode==='agents'&&user.role!=='worker')return false;
+  return user.role==='manager'||settings.allowSelfApproval||!authorIds(proposal).includes(user.id);
+}
 export const UPDATE_LIMITS=Object.freeze({files:40,fileBytes:200000,totalBytes:750000,title:180,description:8000,review:4000});
 const SHA=/^[a-f0-9]{40}$/;
 const DIGEST=/^[a-f0-9]{64}$/;
@@ -114,28 +125,33 @@ export async function reviseProposal(old,data,user,at){
   // Do not carry forward any staging/check/publication metadata from the old content.
   return {id:old.id,...bundle,authorId:old.authorId,authorName:old.authorName,authorIds:[...new Set([...authorIds(old),account.id])],version,digest:await bundleDigest(bundle,version),reviews:[],status:'draft',createdAt:old.createdAt,updatedAt:timestamp(at)};
 }
-export function reviewProposal(old,data,user,at){
+export function reviewProposal(old,data,user,at,policy=DEFAULT_APPROVAL_POLICY){
   const account=identity(user);assertEditable(old);
-  if(authorIds(old).includes(account.id))fail('Authors and editors cannot review their own update.','SELF_REVIEW',403);
+  if(!mayReview(old,account,policy))fail('This account cannot sign off under the current manager policy.','REVIEW_FORBIDDEN',403);
   if(!record(data)||!DIGEST.test(data.digest??'')||data.digest!==old.digest)fail('This update changed. Review its current version.','VERSION_CONFLICT',409);
   if(!['approve','changes'].includes(data.decision))fail('Choose approve or changes.','INVALID_REVIEW');
   const body=text(data.body??'','Review',UPDATE_LIMITS.review,{empty:data.decision==='approve'}),atTime=timestamp(at);
-  const review={reviewerId:account.id,reviewerName:account.name,decision:data.decision,body,digest:old.digest,createdAt:atTime};
+  const review={reviewerId:account.id,reviewerName:account.name,reviewerRole:account.role,decision:data.decision,body,digest:old.digest,createdAt:atTime};
   return {...copy(old),reviews:[...(old.reviews??[]).filter(item=>item.reviewerId!==account.id).map(copy),review],updatedAt:atTime};
 }
 
 /** A green result is an exact-version gate; callers must enforce it again while publishing. */
-export function readiness(proposal,{main,connected=false,proposals=[],activeAccountIds}={}){
+export function readiness(proposal,{main,connected=false,proposals=[],activeAccountIds,activeAccounts,policy=DEFAULT_APPROVAL_POLICY,managerOverride=false}={}){
   const blockers=[],pending=[],warnings=[];
   const add=(code,message,wait=false)=>(wait?pending:blockers).push({code,message});
+  const settings=approvalPolicy(policy),required=settings.mode==='agents'?2:1;
+  const accounts=activeAccounts===undefined?null:new Map(activeAccounts.map(a=>[a.id,a]));
   const authors=new Set(authorIds(proposal));
   const active=activeAccountIds===undefined?null:new Set(activeAccountIds);
   const latest=new Map();
   for(const review of proposal.reviews??[]){
-    if(review?.digest===proposal.digest&&typeof review.reviewerId==='string'&&!authors.has(review.reviewerId)&&(!active||active.has(review.reviewerId))&&['approve','changes'].includes(review.decision))latest.set(review.reviewerId,review);
+    const account=accounts?.get(review?.reviewerId);
+    const role=account?.role||review?.reviewerRole;
+    const eligible=(!accounts||account)&&(!active||active.has(review?.reviewerId))&&(settings.mode==='one'||settings.mode==='manager'&&role==='manager'||settings.mode==='agents'&&role==='worker')&&(role==='manager'||settings.allowSelfApproval||!authors.has(review?.reviewerId));
+    if(review?.digest===proposal.digest&&typeof review.reviewerId==='string'&&eligible&&['approve','changes'].includes(review.decision))latest.set(review.reviewerId,review);
   }
   const approvalCount=[...latest.values()].filter(review=>review.decision==='approve').length;
-  const common={approvalCount,requiredApprovals:REQUIRED_APPROVALS};
+  const common={approvalCount,requiredApprovals:required,approvalMode:settings.mode,allowSelfApproval:settings.allowSelfApproval};
   if(proposal.status==='published'&&proposal.deployment?.state==='failure'){
     const message=proposal.deployment.summary||'GitHub Pages deployment failed.';
     return {...common,state:'blocked',ready:false,color:'red',reasons:[message],warnings:[],blockers:[{code:'DEPLOYMENT_FAILED',message}]};
@@ -154,8 +170,8 @@ export function readiness(proposal,{main,connected=false,proposals=[],activeAcco
   if(!checks||checks.state==='pending')add('CHECKS_PENDING','Automatic checks are still pending.',true);
   else if(checks.state!=='success')add('CHECKS_FAILED',checks.summary||'Automatic checks failed.');
   else if(checks.head!==proposal.github?.head||checks.base!==proposal.base)add('STALE_CHECKS','Checks do not match this exact update and site version.');
-  if([...latest.values()].some(review=>review.decision==='changes'))add('CHANGES_REQUESTED','A reviewer requested changes.');
-  if(approvalCount<REQUIRED_APPROVALS)add('REVIEWS_PENDING',`${REQUIRED_APPROVALS-approvalCount} more independent approval${REQUIRED_APPROVALS-approvalCount===1?' is':'s are'} required.`,true);
+  if(!managerOverride&&[...latest.values()].some(review=>review.decision==='changes'))add('CHANGES_REQUESTED','A reviewer requested changes.');
+  if(!managerOverride&&approvalCount<required)add('REVIEWS_PENDING',settings.mode==='manager'?'The manager’s sign-off is required.':`${required-approvalCount} more ${settings.mode==='agents'?'agent ':''}sign-off${required-approvalCount===1?' is':'s are'} required.`,true);
   const paths=new Set((proposal.files??[]).map(file=>file.path.toLowerCase()));
   for(const other of proposals){
     if(other.id===proposal.id||!OPEN.has(other.status))continue;
@@ -169,13 +185,15 @@ export function readiness(proposal,{main,connected=false,proposals=[],activeAcco
 /** Whitelist data exposed to authenticated room participants; never spread storage records. */
 export function publicProposal(proposal,repoInfo={}){
   const result={};
-  for(const key of ['id','title','description','authorId','authorName','version','digest','base','status','createdAt','updatedAt','publishedAt','publishedBy','publishedCommit','publishStartedAt','publishError'])if(proposal[key]!==undefined)result[key]=proposal[key];
+  for(const key of ['id','title','description','authorId','authorName','version','digest','base','status','createdAt','updatedAt','publishedAt','publishedBy','publishedCommit','managerOverride','publishStartedAt','publishError'])if(proposal[key]!==undefined)result[key]=proposal[key];
   result.authorIds=authorIds(proposal);
   result.files=(proposal.files??[]).map(({path,content})=>({path,content}));
-  result.reviews=(proposal.reviews??[]).map(({reviewerId,reviewerName,decision,body,digest,createdAt})=>({reviewerId,reviewerName,decision,body,digest,createdAt}));
+  result.reviews=(proposal.reviews??[]).map(({reviewerId,reviewerName,reviewerRole,decision,body,digest,createdAt})=>({reviewerId,reviewerName,reviewerRole,decision,body,digest,createdAt}));
   for(const [key,fields] of [['github',['branch','head','pr','url']],['checks',['state','summary','url','head','base']],['deployment',['state','summary','url']]]){
     if(proposal[key]){result[key]={};for(const field of fields)if(proposal[key][field]!==undefined)result[key][field]=proposal[key][field];}
   }
   result.readiness=readiness(proposal,repoInfo);
+  result.overrideReady=readiness(proposal,{...repoInfo,managerOverride:true}).ready;
+  result.canReview=Boolean(repoInfo.user&&mayReview(proposal,repoInfo.user,repoInfo.policy||DEFAULT_APPROVAL_POLICY));
   return result;
 }

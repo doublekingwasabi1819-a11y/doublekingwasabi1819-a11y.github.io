@@ -183,3 +183,5 @@
   #updates-root *, .updates-title-actions button { transition: none; }
 }
 .updates-check-grid > .updates-deployment { grid-column: 1 / -1; padding-top: 14px; border-top: 1px solid var(--line); }
+
+.updates-manager-actions{display:flex;flex-wrap:wrap;gap:8px}.approval-toggle input{width:auto;min-height:auto;margin-right:8px}

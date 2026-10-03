@@ -1,6 +1,6 @@
-import {createProposal,reviseProposal,reviewProposal,readiness,publicProposal} from '../updates-policy.mjs';
+import {createProposal,reviseProposal,reviewProposal,readiness,publicProposal,approvalPolicy,DEFAULT_APPROVAL_POLICY} from '../updates-policy.mjs';
 const fail=(message,code='VALIDATION',status=400)=>{throw Object.assign(new Error(message),{code,status});};
-const actions=new Set(['updates.list','updates.submit','updates.review','updates.withdraw','updates.stage','updates.refresh','updates.publish']);
+const actions=new Set(['updates.list','updates.settings','updates.submit','updates.review','updates.withdraw','updates.stage','updates.refresh','updates.publish']);
 export function createUpdatesRPC({url,serviceKey,fetcher=fetch}){
   return async(action,token,data={})=>{
     let response;try{response=await fetcher(url.replace(/\/$/,'')+'/rest/v1/rpc/relay_updates_rpc',{method:'POST',headers:{'Content-Type':'application/json',apikey:serviceKey,Authorization:'Bearer '+serviceKey},body:JSON.stringify({p_action:action,p_token:token,p_data:data})});}
@@ -12,19 +12,19 @@ export function createUpdatesRPC({url,serviceKey,fetcher=fetch}){
 
 export function createUpdatesHandler({rpc,publisher,now=()=>Date.now(),origins=['https://doublekingwasabi1819-a11y.github.io']}){
   async function repository(){try{return await publisher.repository();}catch(e){return {main:null,connected:false,error:e.message};}}
-  const repoContext=(s,repo)=>({...repo,proposals:s.proposals,activeAccountIds:s.activeAccountIds});
+  const repoContext=(s,repo)=>({...repo,proposals:s.proposals,activeAccountIds:s.activeAccountIds,activeAccounts:s.activeAccounts,policy:s.policy||DEFAULT_APPROVAL_POLICY,user:s.user});
   function find(s,id){const p=s.proposals.find(p=>p.id===id);if(!p)fail('Update proposal not found.','NOT_FOUND',404);return p;}
   const checkDigest=(p,d)=>{if(p.digest!==d)fail('This proposal changed. Read the current version before acting.','CONFLICT',409);};
   function editable(p,user){if(user.id!==p.authorId&&user.role!=='manager')fail('Only the author or manager may change this proposal.','FORBIDDEN',403);if(['publishing','published','withdrawn'].includes(p.status))fail('This proposal is no longer editable.','CONFLICT',409);}
   async function change(token,fn){
     for(let attempt=0;attempt<4;attempt++){
       const state=await rpc('updates.load',token,{}),next=structuredClone(state.proposals);
-      await fn(state,next);
-      try{return await rpc('updates.commit',token,{expectedRevision:state.revision,proposals:next});}
+      const policy=await fn(state,next);
+      try{return await rpc('updates.commit',token,{expectedRevision:state.revision,...(state.contextRevision!==undefined?{expectedContextRevision:state.contextRevision}:{}),proposals:next,...(policy?{policy}:{})});}
       catch(e){if(e.code!=='CONFLICT'||attempt===3)throw e;}
     }
   }
-  async function responseState(token){const state=await rpc('updates.load',token,{}),repo=await repository();return {user:state.user,repository:repo,requiredApprovals:2,proposals:state.proposals.map(p=>publicProposal(p,repoContext(state,repo)))};}
+  async function responseState(token){const state=await rpc('updates.load',token,{}),repo=await repository();return {user:state.user,repository:repo,policy:approvalPolicy(state.policy||DEFAULT_APPROVAL_POLICY),requiredApprovals:state.policy?.mode==='agents'?2:1,proposals:state.proposals.map(p=>publicProposal(p,repoContext(state,repo)))};}
   return async request=>{
     const origin=request.headers.get('origin');const headers={'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Vary':'Origin'};
     if(origin&&origins.includes(origin))Object.assign(headers,{'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Headers':'Content-Type, Authorization','Access-Control-Allow-Methods':'POST, OPTIONS'});
@@ -46,7 +46,11 @@ export function createUpdatesHandler({rpc,publisher,now=()=>Date.now(),origins=[
       const snapshot=await rpc('updates.load',token,{}),user=snapshot.user;
       if(!user||!['manager','worker'].includes(user.role))fail('Sign in again.','SESSION',401);
       if(action==='updates.list')return send(await responseState(token));
-      if(action==='updates.submit'){
+      if(action==='updates.settings'){
+        if(user.role!=='manager')fail('Only the manager can change update approvals.','FORBIDDEN',403);
+        const policy=approvalPolicy(data.policy??null);
+        await change(token,(s)=>{if(s.user.role!=='manager')fail('Manager access required.','FORBIDDEN',403);if(s.proposals.some(p=>p.status==='publishing'))fail('Wait for the current publication before changing approvals.','CONFLICT',409);return policy;});
+      }else if(action==='updates.submit'){
         await change(token,async(s,items)=>{
           const old=items.find(p=>p.id===data.id);
           if(old){
@@ -61,7 +65,7 @@ export function createUpdatesHandler({rpc,publisher,now=()=>Date.now(),origins=[
           else {if(items.filter(p=>!['published','withdrawn'].includes(p.status)).length>=12)fail('Finish existing proposals before adding more.','CAPACITY',413);items.unshift(await createProposal(data,s.user,new Date(now()).toISOString()));}
         });
       }else if(action==='updates.review'){
-        await change(token,(s,items)=>{const p=find(s,data.id);if(['publishing','published','withdrawn'].includes(p.status))fail('This proposal is no longer accepting reviews.','CONFLICT',409);items[items.findIndex(x=>x.id===p.id)]=reviewProposal(p,data,s.user,new Date(now()).toISOString());});
+        await change(token,(s,items)=>{const p=find(s,data.id);if(['publishing','published','withdrawn'].includes(p.status))fail('This proposal is no longer accepting reviews.','CONFLICT',409);items[items.findIndex(x=>x.id===p.id)]=reviewProposal(p,data,s.user,new Date(now()).toISOString(),s.policy||DEFAULT_APPROVAL_POLICY);});
       }else if(action==='updates.withdraw'){
         await change(token,(s,items)=>{const p=find(s,data.id);editable(p,s.user);checkDigest(p,data.digest);items.find(x=>x.id===p.id).status='withdrawn';});
       }else if(action==='updates.stage'){
@@ -95,9 +99,9 @@ export function createUpdatesHandler({rpc,publisher,now=()=>Date.now(),origins=[
           const current=find(s,p.id);checkDigest(current,p.digest);
           if(s.proposals.some(x=>x.status==='publishing'))fail('Another publication is in progress.','CONFLICT',409);
           if(current.github?.head!==p.github?.head)fail('The staged commit changed.','CONFLICT',409);
-          const candidate={...current,checks};const ready=readiness(candidate,repoContext(s,repo));
+          const candidate={...current,checks};const override=data.managerOverride===true;const ready=readiness(candidate,{...repoContext(s,repo),managerOverride:override});
           if(!ready.ready)fail((ready.reasons||[]).join(' ')||'Reviews or checks are incomplete.','NOT_READY',409);
-          locked={...candidate,status:'publishing',publishStartedAt:new Date(now()).toISOString(),publishError:''};items[items.findIndex(x=>x.id===p.id)]=locked;
+          locked={...candidate,status:'publishing',publishedBy:s.user.id,managerOverride:override,publishStartedAt:new Date(now()).toISOString(),publishError:''};items[items.findIndex(x=>x.id===p.id)]=locked;
         });
         let sourceApplied=false;
         try{

@@ -44,7 +44,7 @@ export function createGitHubPublisher({appId='',installationId='',privateKey='',
       commit.sha=old.object.sha;
     }else if(!old)await request('/git/refs',{method:'POST',body:{ref:'refs/heads/'+branch,sha:commit.sha}});
     const prs=await request('/pulls?state=open&head='+encodeURIComponent(REPOSITORY.split('/')[0]+':'+branch));
-    const pr=prs[0]||await request('/pulls',{method:'POST',body:{title:p.title,head:branch,base:'main',body:`Submitted through Relay by ${p.authorName}.\n\n${p.description}\n\nBundle: ${p.digest}\nVersion: ${p.version}\n\nRelay requires two independent account approvals and trusted validation on this exact commit. Only the studio manager can publish through Relay.`}});
+    const pr=prs[0]||await request('/pulls',{method:'POST',body:{title:p.title,head:branch,base:'main',body:`Submitted through Relay by ${p.authorName}.\n\n${p.description}\n\nBundle: ${p.digest}\nVersion: ${p.version}\n\nApproval rules are controlled by the manager in Relay. Trusted validation must pass on this exact commit. Only the studio manager can publish through Relay.`}});
     return {branch,head:commit.sha,pr:pr.number,url:pr.html_url};
   }
   async function check(p){
