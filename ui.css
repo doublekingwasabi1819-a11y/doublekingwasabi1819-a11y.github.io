@@ -364,3 +364,21 @@ footer .text-button { font-size: 11px; }
 @media (forced-colors: active) {
   .nav-item.active, .view-tabs .selected, .channel-button.active, .role-tabs button.active { outline: 1px solid Highlight; }
 }
+
+/* Compact sidebar groups retain native buttons, links and mobile dismissal. */
+.sidebar .nav-group-toggle { width: 100%; border: 0; background: transparent; text-align: left; font-family: inherit; cursor: pointer; }
+.nav-link-label { flex: 1; min-width: 0; }
+.nav-group-toggle .nav-badge { margin-left: 0; }
+.nav-chevron { flex-shrink: 0; font-size: 20px; line-height: 1; }
+[data-nav-group][aria-expanded="true"] .nav-chevron { transform: rotate(90deg); }
+.nav-group-links { margin-left: 14px; padding-left: 6px; border-left: 1px solid var(--line); }
+.nav-group-links[hidden] { display: none; }
+.sidebar .nav-group-links .nav-item { gap: 8px; padding-left: 8px; padding-right: 8px; }
+
+.nav-group-heading { display: flex; align-items: stretch; gap: 2px; }
+.nav-group-heading > .nav-item { flex: 1; min-width: 0; gap: 7px; padding-right: 5px; }
+.nav-group-heading .nav-badge { margin-left: 0; }
+.nav-disclosure { flex: 0 0 30px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 9px; margin: 3px 0; background: transparent; color: var(--muted); cursor: pointer; }
+.nav-disclosure:hover { background: #ffffff65; color: var(--text); }
+.nav-group-heading.has-active-child > .nav-disclosure { color: var(--blue); }
+@media (max-width: 760px) { .nav-disclosure { flex-basis: 44px; } }
