@@ -13,11 +13,12 @@ function viewer(){
   value:'',textContent:'',hidden:id==='screen',disabled:['pause','open'].includes(id),src:'',listeners:new Map(),
   addEventListener(name,handler){this.listeners.set(name,handler);},removeAttribute(name){if(name==='src')this.src='';}
  }]));
- const requests=[],blobs=[],revoked=[],intervals=[],events=new Map();
+ const requests=[],blobs=[],revoked=[],intervals=[],events=new Map(),deadlines=new Set();
  runInNewContext(script,{
   document:{querySelector:selector=>elements.get(selector.slice(1))},
   fetch(path,options){return new Promise((resolve,reject)=>requests.push({path,options,resolve,reject}));},
   URL:{createObjectURL(blob){const url='blob:fixture-'+(blobs.length+1);blobs.push({url,blob});return url;},revokeObjectURL:url=>revoked.push(url)},
+  AbortController,setTimeout(fn,ms){const timer={fn,ms};deadlines.add(timer);return timer;},clearTimeout:timer=>deadlines.delete(timer),
   setInterval:fn=>intervals.push(fn),addEventListener:(name,fn)=>events.set(name,fn)
  });
  const click=id=>elements.get(id).listeners.get('click')();
@@ -25,7 +26,7 @@ function viewer(){
  const finish=async(index,body,status=200)=>{
   requests[index].resolve({ok:status>=200&&status<300,status,blob:async()=>({fixtureImage:body})});await flush();
  };
- return {shell,elements,requests,blobs,revoked,intervals,events,click,connect,finish};
+ return {shell,elements,requests,blobs,revoked,intervals,events,deadlines,click,connect,finish};
 }
 
 test('viewer reconnect clears cached screen and drops an older in-flight worker image',async()=>{
@@ -33,12 +34,70 @@ test('viewer reconnect clears cached screen and drops an older in-flight worker 
  assert.equal(v.elements.get('screen').hidden,false);assert.equal(v.blobs[0].blob.fixtureImage,'first-A-screen');
  v.intervals[0]();assert.equal(v.requests.length,2);
  v.connect('connection-B');
+ assert.equal(v.requests.length,3);assert.equal(v.requests[1].options.signal.aborted,true);
+ assert.equal(v.requests[2].options.headers.Authorization,'Bearer connection-B');
  assert.equal(v.elements.get('screen').hidden,true);assert.equal(v.elements.get('screen').src,'');
  assert.deepEqual(v.revoked,['blob:fixture-1']);assert.equal(v.elements.get('token').value,'');
  await v.finish(1,'late-A-screen');assert.equal(v.blobs.length,1);assert.equal(v.elements.get('screen').hidden,true);
- v.intervals[0]();assert.equal(v.requests[2].options.headers.Authorization,'Bearer connection-B');
+ v.intervals[0]();assert.equal(v.requests.length,3,'Old A completion cannot release B snapshot guard');
  await v.finish(2,'B-screen');assert.equal(v.blobs.at(-1).blob.fixtureImage,'B-screen');
  assert.equal(v.elements.get('screen').hidden,false);
+});
+
+test('reconnect starts immediately despite a hanging request and late failure cannot change the new connection',async()=>{
+ const v=viewer();v.connect('connection-A');assert.equal(v.elements.get('status').textContent,'Connecting…');
+ v.connect('connection-B');assert.equal(v.requests.length,2);assert.equal(v.requests[0].options.signal.aborted,true);
+ for(let i=0;i<100;i++)v.intervals[0]();assert.equal(v.requests.length,2);
+ await v.finish(0,'late-denied',401);assert.equal(v.elements.get('open').disabled,false);
+ assert.equal(v.elements.get('status').textContent,'Connecting…');
+ v.intervals[0]();assert.equal(v.requests.length,2);await v.finish(1,'B-screen');
+ assert.equal(v.blobs.at(-1).blob.fixtureImage,'B-screen');
+});
+
+test('unavailable or closed browser clears and revokes the previous image',async()=>{
+ for(const code of [404,409,429,503]){
+  const v=viewer();v.connect('connection-A');await v.finish(0,'A-screen');v.intervals[0]();await v.finish(1,'unavailable',code);
+  assert.equal(v.elements.get('screen').hidden,true);assert.equal(v.elements.get('screen').src,'');
+  assert.deepEqual(v.revoked,['blob:fixture-1']);assert.equal(v.elements.get('open').disabled,false);
+  assert.match(v.elements.get('status').textContent,code===404?/Browser is closed/:/Browser view unavailable/);
+  v.intervals[0]();await v.finish(2,'restored');assert.equal(v.elements.get('screen').hidden,false);
+ }
+});
+
+test('snapshot deadline covers fetch and body, permits retry and drops late results',async()=>{
+ for(const stage of ['fetch','body']){
+  const v=viewer();v.connect('connection-A');await v.finish(0,'A-screen');v.intervals[0]();let resolveBody;
+  if(stage==='body'){v.requests[1].resolve({ok:true,status:200,blob:()=>new Promise(resolve=>{resolveBody=resolve;})});await flush();}
+  const timer=[...v.deadlines][0];assert.equal(timer.ms,10000);timer.fn();await flush();
+  assert.equal(v.requests[1].options.signal.aborted,true);assert.equal(v.elements.get('screen').hidden,true);
+  assert.match(v.elements.get('status').textContent,/timed out/);v.intervals[0]();assert.equal(v.requests.length,3);
+  if(stage==='body'){resolveBody({fixtureImage:'late-body'});await flush();}else await v.finish(1,'late-fetch');
+  assert.equal(v.blobs.length,1);v.intervals[0]();assert.equal(v.requests.length,3);
+  await v.finish(2,'recovered');assert.equal(v.blobs.at(-1).blob.fixtureImage,'recovered');
+ }
+});
+
+test('disconnect cancels current requests and removes their deadlines',async()=>{
+ const v=viewer();v.connect('connection-A');v.click('pause');await flush();
+ assert.equal(v.requests[0].options.signal.aborted,true);assert.equal(v.deadlines.size,0);
+ assert.equal(v.elements.get('status').textContent,'Disconnected');v.intervals[0]();assert.equal(v.requests.length,1);
+});
+
+test('timed-out browser action is not retried automatically',async()=>{
+ const v=viewer();v.connect('connection-A');await v.finish(0,'A-screen');const opening=v.click('open');
+ [...v.deadlines][0].fn();await opening;assert.equal(v.requests[1].options.signal.aborted,true);
+ assert.match(v.elements.get('status').textContent,/Check the view before retrying/);assert.equal(v.elements.get('screen').hidden,true);
+ v.intervals[0]();assert.equal(v.requests.filter(request=>request.path==='/viewer/open').length,1);
+ await v.finish(2,'current-view');await v.finish(1,'late-open-success');
+ assert.equal(v.requests.filter(request=>request.path==='/viewer/open').length,1);
+});
+
+test('Enter connects from the token field without persisting or submitting it',async()=>{
+ const v=viewer();let prevented=0;v.elements.get('token').value='keyboard-fixture';
+ const keydown=v.elements.get('token').listeners.get('keydown');keydown({key:'Enter',isComposing:true,preventDefault(){prevented++;}});
+ assert.equal(v.requests.length,0);keydown({key:'Enter',isComposing:false,preventDefault(){prevented++;}});
+ assert.equal(prevented,1);assert.equal(v.elements.get('token').value,'');
+ assert.equal(v.requests[0].options.headers.Authorization,'Bearer keyboard-fixture');await v.finish(0,'keyboard-screen');
 });
 
 test('authentication failure erases cached screen, disables controls and stops polling',async()=>{

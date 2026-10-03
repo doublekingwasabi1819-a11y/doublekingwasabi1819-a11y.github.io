@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Client,StreamableHTTPClientTransport} from '@modelcontextprotocol/client';
+import {PROTOCOL_VERSION_META_KEY,CLIENT_CAPABILITIES_META_KEY} from '@modelcontextprotocol/server';
 import {createRelayBrowserHost} from '../relay-host.mjs';
+import {relayBrowserToolDescriptors,relayDirectToolDescriptors} from '../mcp-tool-metadata.mjs';
 
 // Controlled adapters and fake browser drivers over actual loopback HTTP/MCP.
 // No real Relay session, browser, login, credential extraction, or remote request.
@@ -60,6 +62,14 @@ test('combined Relay host lists five safe browser tools and exact five direct Re
   assert.equal(list.length,10);assert.deepEqual(list.map(t=>t.name).sort(),['browser_open','browser_observe','browser_click','browser_screenshot','browser_close',...tools().map(t=>t.name)].sort());assert.equal(list.some(t=>t.name==='browser_fill'),false);
   for(const tool of list.filter(t=>t.name.startsWith('relay_fast_'))){assert.equal(tool.inputSchema.additionalProperties,false);assert.equal(JSON.stringify(tool).includes(SECRET),false);}
   assert.equal(f.drivers.length,0);assert.equal(client.getServerVersion().name,'relay-browser-controller');
+});
+for(const protocol of ['2026-07-28','2025-11-25'])test(`combined raw ${protocol} HTTP discovery publishes all ten fixed schemas and actual combined OAuth scopes`,async t=>{
+  const f=await fixture(t),params=protocol==='2026-07-28'?{_meta:{[PROTOCOL_VERSION_META_KEY]:protocol,[CLIENT_CAPABILITIES_META_KEY]:{}}}:{};
+  const response=await fetch(f.url,{method:'POST',headers:{authorization:`Bearer ${f.grants[0].token}`,'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':protocol,...(protocol==='2026-07-28'?{'mcp-method':'tools/list'}:{})},body:JSON.stringify({jsonrpc:'2.0',id:17,method:'tools/list',params})});
+  const text=await response.text();assert.equal(response.status,200,text);
+  const wire=JSON.parse(text.startsWith('event:')?text.split('\n').find(line=>line.startsWith('data: ')).slice(6):text);assert.equal(wire.error,undefined);
+  assert.deepEqual(wire.result.tools,[...relayBrowserToolDescriptors,...relayDirectToolDescriptors]);
+  assert.equal(JSON.stringify(wire.result.tools).includes(SECRET),false);assert.equal(f.calls.length,0);assert.equal(f.drivers.length,0);
 });
 test('combined MCP browser actions still work and remain isolated per worker grant',async t=>{
   const f=await fixture(t),a=await f.connect(0),b=await f.connect(1),first=ok(await a.callTool({name:'browser_open',arguments:{}})),second=ok(await b.callTool({name:'browser_open',arguments:{}}));assert.notEqual(first.sessionId,second.sessionId);errorCode(await b.callTool({name:'browser_observe',arguments:{session_id:first.sessionId}}),'FORBIDDEN');

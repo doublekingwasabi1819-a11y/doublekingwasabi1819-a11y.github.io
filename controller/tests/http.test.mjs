@@ -4,7 +4,7 @@ import {Client, StreamableHTTPClientTransport} from '@modelcontextprotocol/clien
 import {McpServer, fromJsonSchema} from '@modelcontextprotocol/server';
 import {createControllerHttp, HttpAuthenticationError} from '../http-server.mjs';
 import {createBrowserController} from '../core.mjs';
-import {request as nodeRequest} from 'node:http';
+import {request as nodeRequest, createServer} from 'node:http';
 
 const contexts = [Object.freeze({fixtureWorker: 'first'}), Object.freeze({fixtureWorker: 'second'})];
 const bindings = [
@@ -85,6 +85,58 @@ test('HTTP host requires explicit trusted hooks and only listens when asked', as
   const host = createControllerHttp({authenticate() {}, controller: {callTool() {}}});
   await assert.rejects(host.listen({host: '0.0.0.0'}), /loopback/);
   await host.close();
+});
+
+const lifecycleHost = () => createControllerHttp({
+  authenticate: async () => ({principalId: 'startup-fixture', requestContext: contexts[0]}),
+  controller: {async callTool() {return {content: []};}},
+  publicRoutes: {'/health': {body: '<!doctype html><title>Startup fixture</title>', contentType: 'text/html'}}
+});
+const bindFixture = server => new Promise((resolve, reject) => {
+  server.once('error', reject); server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+});
+const closeFixture = server => new Promise(resolve => server.close(resolve));
+
+test('failed occupied-port startup permits an explicit same-host retry after the port is freed', async t => {
+  const occupied = createServer(), port = await bindFixture(occupied), host = lifecycleHost();
+  t.after(async () => {await closeFixture(occupied); await host.close();});
+  await assert.rejects(host.listen({port}), error => error.code === 'EADDRINUSE');
+  await assert.rejects(host.listen({port}), error => error.code === 'EADDRINUSE');
+  await closeFixture(occupied);
+  const {url} = await host.listen({port});
+  assert.equal(new URL(url).port, String(port));
+  assert.equal((await fetch(url.replace('/mcp', '/health'))).status, 200);
+  await assert.rejects(host.listen(), /loopback/);
+});
+
+test('a concurrent listen cannot replace the candidate server or its startup slot', async t => {
+  const host = lifecycleHost();t.after(() => host.close());
+  const startup = host.listen();await assert.rejects(host.listen(), /loopback/);
+  const {url} = await startup;assert.equal((await fetch(url.replace('/mcp', '/health'))).status, 200);
+});
+
+test('close during immediate startup settles both operations and never returns a live endpoint', {timeout: 2000}, async () => {
+  for(const hostname of ['127.0.0.1', 'localhost']){
+    const host = lifecycleHost(), occupied = createServer(), port = await bindFixture(occupied);
+    await closeFixture(occupied);
+    const startup = host.listen({host: hostname, port}), shutdown = host.close();
+    const [started, stopped] = await Promise.allSettled([startup, shutdown]);
+    assert.equal(started.status, 'rejected');assert.match(started.reason.message, /closed during startup/);
+    assert.equal(stopped.status, 'fulfilled');await assert.rejects(host.listen({port}), /loopback/);
+    // A later event-loop turn must not resurrect the cancelled listener.
+    await new Promise(resolve => setImmediate(resolve));
+    const probe = createServer();await new Promise((resolve, reject) => {
+      probe.once('error', reject);probe.listen(port, hostname, resolve);
+    });await closeFixture(probe);
+  }
+});
+
+test('closing after failed startup keeps the host retired and close remains idempotent', async t => {
+  const occupied = createServer(), port = await bindFixture(occupied), host = lifecycleHost();
+  t.after(() => closeFixture(occupied));
+  await assert.rejects(host.listen({port}), error => error.code === 'EADDRINUSE');
+  await host.close();await host.close();await assert.rejects(host.listen(), /loopback/);
+  assert.equal((await host.fetch(new Request('http://127.0.0.1/health'))).status, 503);
 });
 
 test('real HTTP MCP client discovers, lists and runs all six browser tools with stable host contexts', async t => {

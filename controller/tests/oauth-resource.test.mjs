@@ -124,6 +124,18 @@ test('provider runs on every request and passes no token or signed claims into t
   assert.equal(f.verified[0].config.resource, RESOURCE); assert.equal(f.verified[0].config.signal.aborted, false);
 });
 
+test('trusted grant accessor returns frozen canonical scopes and expiry only after verified policy', async () => {
+  const f=policy();
+  f.credentials.set('registered-fixture-a',{...identity(),claims:{...claims(),scope:'relay:read browser:control'}});
+  const value=await f.resource.authenticateGrant(req('/mcp',{headers:{authorization:'Bearer registered-fixture-a'}}));
+  assert.equal(Object.isFrozen(value),true);assert.equal(Object.isFrozen(value.scopes),true);
+  assert.deepEqual(value.scopes,['browser:control','relay:read']);assert.equal(value.expiresAt,2000000);
+  assert.equal(value.requestContext,contextA);assert.deepEqual(Object.keys(value.requestContext),['grantId']);
+  assert.deepEqual(Object.keys(await f.resource.authenticate(req('/mcp',{headers:{authorization:'Bearer registered-fixture-a'}}))).sort(),['principalId','requestContext']);
+  f.credentials.set('registered-fixture-b',{...identity(RESOURCE,contextB),claims:{...claims(),aud:'https://wrong.fixture.invalid'}});
+  await assert.rejects(f.resource.authenticateGrant(req('/mcp',{headers:{authorization:'Bearer registered-fixture-b'}})),error=>error.code==='AUTH_REQUIRED');
+});
+
 test('wrong issuer, Relay/downstream audience, expiry, not-before and missing scope fail closed', async () => {
   for (const [patch, code] of [
     [{iss: `${ISSUER}/`}, 'AUTH_REQUIRED'], [{iss: 'https://wrong.fixture.invalid'}, 'AUTH_REQUIRED'],
@@ -178,6 +190,40 @@ test('stable context cannot alias a different grant or silently change signed gr
   f.credentials.set('registered-fixture-a', identity(RESOURCE, Object.freeze({grantId: 'fresh-context'})));
   await rejectsAuth(f.resource, req('/mcp', {headers: {authorization: 'Bearer registered-fixture-a'}}));
   assert.deepEqual(f.retired, [contextA]);
+});
+
+test('concurrent first-use tokens cannot alias a context while unrelated expiry cleanup yields', {timeout: 5000}, async () => {
+  let time = 1000000, entered, release;
+  const cleanupStarted = new Promise(resolve => {entered = resolve;});
+  const cleanupGate = new Promise(resolve => {release = resolve;});
+  const shared = Object.freeze({grantId: 'concurrent-new-grant'});
+  const f = policy({now: () => time, onRevoke: async context => {
+    assert.equal(context, contextA);
+    entered(); await cleanupGate;
+  }});
+  await f.resource.authenticate(req('/mcp', {headers: {authorization: 'Bearer registered-fixture-a'}}));
+  time = 2000000;
+  for (const subject of ['first', 'second']) f.credentials.set(subject, {
+    ...identity(RESOURCE, shared, subject), claims: {...claims(RESOURCE, subject), exp: 3000}
+  });
+  const request = token => req('/mcp', {headers: {authorization: `Bearer ${token}`}});
+  const first = f.resource.authenticate(request('first'));
+  await cleanupStarted;
+  const second = f.resource.authenticate(request('second'));
+  // Drain verification microtasks so both requests reach the shared cleanup gate.
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  const results = await Promise.allSettled([first, second]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter(result => result.status === 'rejected').length, 1);
+  const winningIndex = results.findIndex(result => result.status === 'fulfilled');
+  const winner = winningIndex === 0 ? 'first' : 'second';
+  const loser = winningIndex === 0 ? 'second' : 'first';
+  assert.equal(results[1 - winningIndex].reason.code, 'AUTH_REQUIRED');
+  const again = await f.resource.authenticate(request(winner));
+  assert.equal(again.requestContext, shared);
+  assert.equal(again.principalId, results[winningIndex].value.principalId);
+  await rejectsAuth(f.resource, request(loser));
 });
 
 test('verified-token cache is bounded; expired known tokens safely trigger lifecycle retirement', async () => {
