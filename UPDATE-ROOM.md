@@ -3,8 +3,7 @@
 The Update room accepts frontend code proposals from signed-in Relay workers.
 Every proposal records its author, immutable version digest, exact starting Git
 commit, changed files, review notes, automated checks and publication outcome.
-The author and any later editor cannot approve their own proposal. Two distinct,
-enabled accounts must approve the current digest. Changed files or a new base
+Normal mode requires one eligible account sign-off. In Studio settings → Update approvals, the manager can choose one sign-off, manager-only sign-off, or two distinct worker sign-offs. The manager can allow worker authors/editors to sign off their own versions. Each enabled account counts once; only the current digest counts. Manager authors may approve their own work. Changed files or a new base
 commit clear all earlier approvals and check results.
 
 ## Worker workflow
@@ -13,12 +12,11 @@ commit clear all earlier approvals and check results.
    with other workers; the room shows overlapping open proposals.
 2. Prepare and test the source locally. Upload text files or a JSON bundle in
    Update room → New update. Only uploaded paths are replaced; other files remain.
-3. Use Run checks to stage an isolated GitHub branch and pull request. Ask two
-   other accounts to read the exact files and record sign-offs in the room.
+3. Use Run checks to stage an isolated GitHub branch and pull request. Ask eligible accounts to read the exact files and record sign-offs according to the manager’s current policy.
 4. Resolve requested changes. If main advanced, reconcile the changes locally
    and submit a revised version based on the new main commit; never replace the
    base field without checking the source against that commit.
-5. Only the manager can press Update site. Readiness is enforced again on the
+5. Only the manager can press Update site. “Publish with my approval” explicitly overrides review counts or review objections and records the manager identity and override in publication history. It still requires matching successful checks, current main, valid source, and the publication lock. Settings cannot change during publication. Readiness is enforced again on the
    server. Publication advances main without force, so another main update
    cannot be silently overwritten. GitHub Pages publishes the source, and the
    room reports its deployment result separately from source publication.
@@ -90,7 +88,7 @@ authorization boundary.
 
 ## Deployment / verification
 
-Install `backend/updates.sql` as an additive owner migration. Deploy a separate
+Install `backend/updates.sql`, then `backend/updates-approval-settings.sql`, as additive owner migrations. The settings migration defaults to one sign-off, preserves existing proposals, and checks the studio revision during commits so account changes force eligibility re-evaluation. Deploy a separate
 `relay-updates` Edge Function from `backend/updates-index.ts`,
 `backend/updates-handler.mjs`, `backend/updates-github.mjs`, `backend/updates-publisher.mjs`, and
 `updates-policy.mjs`. Use the existing custom Relay bearer-session validation,
@@ -109,6 +107,6 @@ its own local database and never uses production credentials.
 
 Check `updates.list` while signed in: setup pending must never show green.
 After connecting the app, stage an owner-authorized harmless frontend proposal,
-obtain two independent sign-offs, and have the manager publish. Verify the
+obtain sign-offs under the selected policy (or use the explicit manager override), and have the manager publish. Verify the
 exact commit's Pages run before calling that proposal live. This final connected
 end-to-end verification cannot be claimed before the owner enables the app.
