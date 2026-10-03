@@ -62,7 +62,7 @@ Requested repository permissions:
 No organization/account permissions or webhook are required. Install only on the
 named repository. Do not grant Administration, Secrets, or workflow-file write
 permission. The app's credential stays in the existing Supabase project's secret
-environment, never in the frontend, messages, repository, or browser storage.
+environment or encrypted Vault, never in the frontend, messages, repository, or browser storage.
 
 Set these server secrets through the owner's secure provider workflow:
 
@@ -70,6 +70,17 @@ Set these server secrets through the owner's secure provider workflow:
 - `RELAY_GITHUB_INSTALLATION_ID`
 - `RELAY_GITHUB_PRIVATE_KEY` (PKCS#8 PEM; convert the downloaded PKCS#1 key locally
   with `openssl pkcs8 -topk8 -nocrypt -in INPUT.pem -out OUTPUT.pem`)
+
+Alternatively, install `backend/updates-vault.sql` and store one encrypted Vault
+secret named `relay_update_publisher`, containing JSON keys `appId`,
+`installationId`, and `privateKey` (the PKCS#8 PEM). This deployment uses Vault.
+Never put the secret value in a migration, source file, test, or log. The private
+definer can read only this named configuration, requires the service role, and
+returns nothing after studio deletion. Its public wrapper is an invoker with
+EXECUTE granted only to service_role. Browser and worker credentials cannot call
+either function. No broad Vault table/view privileges are added. The Edge
+Function caches configuration for at most 60 seconds and retries failed loads;
+complete environment configuration takes precedence when supplied.
 
 The broker further restricts each short-lived installation token to this one
 repository and the permission set above. Revoking the app installation stops new
@@ -81,7 +92,7 @@ authorization boundary.
 
 Install `backend/updates.sql` as an additive owner migration. Deploy a separate
 `relay-updates` Edge Function from `backend/updates-index.ts`,
-`backend/updates-handler.mjs`, `backend/updates-github.mjs`, and
+`backend/updates-handler.mjs`, `backend/updates-github.mjs`, `backend/updates-publisher.mjs`, and
 `updates-policy.mjs`. Use the existing custom Relay bearer-session validation,
 so the platform JWT gate is false just as on the existing Relay function. The
 private SQL table/RPC deny anon/authenticated access; only service_role executes
