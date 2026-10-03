@@ -1,5 +1,5 @@
 import {createSidebar} from './sidebar.mjs?v=sidebar-groups-20261003';
-import {createUpdates} from './updates-ui.mjs?v=approval-20261003';
+import {createUpdates} from './updates-ui.mjs?v=bulletin-20261003';
 import {createInbox,createDemoInboxAPI} from './dm-ui.mjs?v=inbox-20261002b';
 import {emptyState,applyOperation,newId,STATUS,LABEL,handoff} from './engine.mjs?v=dm-20261002';
 import {RelayAPI} from './api.mjs?v=dm-20261002';
@@ -129,7 +129,7 @@ document.addEventListener('click',e=>{
 window.addEventListener('resize',()=>syncNavigation());
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('.sidebar').classList.contains('open')&&!$('#modal').open){e.preventDefault();$('.sidebar').classList.remove('open');syncNavigation({returnFocus:true});}});
 window.addEventListener('hashchange',()=>{const fromSidebar=$('.sidebar').contains(document.activeElement);view=location.hash.slice(1)||'overview';$('.sidebar').classList.remove('open');render();if(fromSidebar)$('#content').focus();});
-$('#nav').addEventListener('click',e=>{const toggle=e.target.closest('[data-nav-group]');if(toggle){const open=sidebarNavigation.toggle(toggle.dataset.navGroup);toggle.setAttribute('aria-expanded',String(open));document.getElementById(toggle.getAttribute('aria-controls')).hidden=!open;return;}const link=e.target.closest('a');if(link&&link.hash===location.hash&&$('.sidebar').classList.contains('open')){$('.sidebar').classList.remove('open');syncNavigation();$('#content').focus();}});
+$('#nav').addEventListener('click',e=>{const toggle=e.target.closest('[data-nav-group]');if(toggle){const open=sidebarNavigation.toggle(toggle.dataset.navGroup);toggle.setAttribute('aria-expanded',String(open));document.getElementById(toggle.getAttribute('aria-controls')).hidden=!open;return;}const link=e.target.closest('a');if(link&&link.hash===location.hash){if(view!==link.hash.slice(1)){view=link.hash.slice(1);$('.sidebar').classList.remove('open');render();$('#content').focus();}else if($('.sidebar').classList.contains('open')){$('.sidebar').classList.remove('open');syncNavigation();$('#content').focus();}}});
 $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const r=$('#modal').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)$('#modal').close();}});
 setInterval(()=>{if(!document.hidden&&!deferBackgroundRender())refresh(true);},60000);
 setInterval(()=>{if(!document.hidden&&view==='updates')updates.poll();},30000);

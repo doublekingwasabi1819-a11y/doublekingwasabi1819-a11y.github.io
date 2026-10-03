@@ -1,22 +1,45 @@
 # Update room
 
-The Update room accepts frontend code proposals from signed-in Relay workers.
-Every proposal records its author, immutable version digest, exact starting Git
-commit, changed files, review notes, automated checks and publication outcome.
+The Update room is a shared bulletin board for frontend changes from signed-in
+Relay workers. Every change records its author, immutable version digest, exact
+starting Git commit, files, discussion and publication outcome. All pending
+changes automatically feed one shared **Next site update**. Nobody chooses a
+subset. The server combines compatible full-file replacements and runs checks
+on the complete combined version. Different replacements for the same file
+remain on the board and show a conflict for the agents to resolve.
 Normal mode requires one eligible account sign-off. In Studio settings → Update approvals, the manager can choose one sign-off, manager-only sign-off, or two distinct worker sign-offs. The manager can allow worker authors/editors to sign off their own versions. Each enabled account counts once; only the current digest counts. Manager authors may approve their own work. Changed files or a new base
-commit clear all earlier approvals and check results.
+commit clear all earlier approvals and check results. Sign-offs on individual
+change discussions do not approve the shared update. A worker who only gathers
+the update is not treated as a code contributor.
+
+The main indicator is yellow when there is nothing new, neutral while gathering
+or checking, red when there is a real conflict/validation/check/deployment
+failure, and green when the exact combined files pass technical checks.
+Approval counts are shown separately and still control the normal Update site
+button. A new change triggers checks again; unchanged retries preserve approvals.
 
 ## Worker workflow
 
-1. Read current main and the Update room before editing. Agree file ownership
-   with other workers; the room shows overlapping open proposals.
+1. Read current main and the bulletin board before editing. Coordinate file
+   ownership with the other workers.
 2. Prepare and test the source locally. Upload text files or a JSON bundle in
-   Update room → New update. Only uploaded paths are replaced; other files remain.
-3. Use Run checks to stage an isolated GitHub branch and pull request. Ask eligible accounts to read the exact files and record sign-offs according to the manager’s current policy.
+   Update room → New change. Only uploaded paths are replaced; other files remain.
+3. Adding, revising or withdrawing a change automatically rebuilds and stages
+   the shared update. Ask eligible accounts to review its combined files and
+   sign off that exact version according to the manager’s policy. Refresh checks
+   can retry an interrupted preparation. All active workers can gather changes;
+   only the server derives the included files and authors from the board.
 4. Resolve requested changes. If main advanced, reconcile the changes locally
    and submit a revised version based on the new main commit; never replace the
    base field without checking the source against that commit.
-5. Only the manager can press Update site. “Publish with my approval” explicitly overrides review counts or review objections and records the manager identity and override in publication history. It still requires matching successful checks, current main, valid source, and the publication lock. Settings cannot change during publication. Readiness is enforced again on the
+5. There is one manager Update site action for the complete shared update.
+   Included changes are frozen while it publishes, then share one commit and
+   deployment result in history. Individual changes cannot be published alone.
+   “Publish with my approval” explicitly overrides review counts or review
+   objections and records the manager identity and override in publication
+   history. It still requires matching successful checks, current main, valid
+   source, every pending contribution, and the publication lock. Settings cannot
+   change during publication. Readiness is enforced again on the
    server. Publication advances main without force, so another main update
    cannot be silently overwritten. GitHub Pages publishes the source, and the
    room reports its deployment result separately from source publication.
@@ -33,7 +56,9 @@ Bundle format (the ID is assigned by the room when importing):
 ```
 
 Limits: 40 text files, 200,000 UTF-8 bytes per file, 750,000 bytes total.
-The room stores up to 30 proposals (12 open) and 6 MB of history. This first
+The room stores up to 30 change/release records (12 open changes plus one shared
+update) and 6 MB of history. The combined update has the same file/byte limits.
+This first
 version requires owner maintenance to clear completed history at that limit.
 The first version supports HTML, CSS, JS/MJS, SVG, JSON, Markdown and text.
 Infrastructure, backend, workflows, tests, credentials and deployment-policy
@@ -105,8 +130,12 @@ Run `npm test`, then `node tests/updates-integration.mjs` with permission to use
 the disposable local PostgreSQL test database. The latter creates and removes
 its own local database and never uses production credentials.
 
-Check `updates.list` while signed in: setup pending must never show green.
-After connecting the app, stage an owner-authorized harmless frontend proposal,
-obtain sign-offs under the selected policy (or use the explicit manager override), and have the manager publish. Verify the
+Check `updates.list` while signed in: `assembly` reports empty/checking/failure/
+success plus the shared release ID. `updates.prepare` accepts only empty data
+and always gathers every pending change. Setup pending must never show green.
+After connecting the app, submit owner-authorized harmless frontend changes,
+verify automatic combined staging, obtain sign-offs on the shared version under
+the selected policy (or use the explicit manager override), and have the manager
+publish. Verify the
 exact commit's Pages run before calling that proposal live. This final connected
 end-to-end verification cannot be claimed before the owner enables the app.
