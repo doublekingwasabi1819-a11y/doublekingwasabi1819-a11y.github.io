@@ -185,3 +185,57 @@
 .updates-check-grid > .updates-deployment { grid-column: 1 / -1; padding-top: 14px; border-top: 1px solid var(--line); }
 
 .updates-manager-actions{display:flex;flex-wrap:wrap;gap:8px}.approval-toggle input{width:auto;min-height:auto;margin-right:8px}
+
+/* All waiting contributions feed one automatically checked site update. */
+.updates-release { margin: 14px 0 18px; padding: 22px 24px; border: 1px solid #dce3ed; border-radius: 16px; background: var(--surface, #fff); box-shadow: var(--shadow); }
+.updates-release-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.updates-release-heading > div { min-width: 0; }
+.updates-release-heading .eyebrow { margin-bottom: 8px; }
+.updates-release h2 { margin: 0; color: #374b63; font-size: 21px; font-weight: 650; letter-spacing: -.45px; line-height: 1.4; }
+.updates-release-heading p { max-width: 660px; margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.updates-release-light { display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 7px 10px; border-radius: 8px; background: #edf1f6; color: #566a80; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.updates-release-light > span { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.updates-release.empty { border-color: #e9e1ca; background: #fffdf7; }
+.updates-release-light.empty { color: #8a681c; background: #fff1c9; }
+.updates-release.ready { border-color: #cce6d7; background: #f5fbf7; }
+.updates-release.ready h2 { color: #286749; }
+.updates-release-light.ready { color: #22724f; background: #e2f3e9; }
+.updates-release.blocked { border-color: #edcfd4; background: #fff8f8; }
+.updates-release.blocked h2 { color: #983742; }
+.updates-release-light.blocked { color: #a33844; background: #fce4e8; }
+.updates-release-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; margin-top: 18px; color: #667587; font-size: 11px; }
+.updates-release-summary strong { color: #3c526b; font-weight: 600; }
+.updates-release-summary code { color: #526b87; font-size: 10px; }
+.updates-release-errors { margin: 14px 0 0; padding-left: 18px; color: #983d49; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.updates-release-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 19px; }
+.updates-release-actions .updates-manager-actions { margin-left: auto; }
+.updates-release > .updates-hint { margin: 13px 0 0; }
+.updates-state.checking, .updates-state.submitted { color: #596d82; background: #eaf0f6; }
+.updates-readiness.checking { border-color: #dde5ee; background: #f6f8fb; }
+.updates-readiness.checking h3 { color: #4c627a; }
+.updates-readiness.checking p { color: #64778c; }
+.updates-check-icon { color: #62768d; background: #edf1f6; }
+.updates-check-icon.complete { color: #287452; background: #eaf6ef; }
+.updates-check-icon.failed { color: #ae3c46; background: #fcebef; }
+.updates-proposal.is-release { border-color: #d4dfe9; background: #f9fbfd; }
+.updates-proposal.is-release.selected { background: #fff; }
+.updates-included { margin-top: 20px; }
+.updates-included h3 { margin: 0; font-size: 13px; }
+.updates-included h3 > span { padding-left: 5px; color: #8491a2; font-size: 12px; font-weight: 400; }
+.updates-included ul { list-style: none; margin: 9px 0 0; padding: 0; }
+.updates-included li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 14px; padding: 8px 0; border-bottom: 1px solid #eef0f4; }
+#updates-root .updates-included button { min-height: 28px; padding: 2px 0; border: 0; background: transparent; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.updates-included li > span { color: var(--muted); font-size: 10px; }
+.updates-publication-note { margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--line); }
+@media (max-width: 900px) {
+  .updates-release-heading { flex-wrap: wrap; gap: 12px; }
+  .updates-release-actions .updates-manager-actions { width: 100%; margin-left: 0; }
+}
+@media (max-width: 540px) {
+  .updates-release { padding: 17px; }
+  .updates-release h2 { font-size: 19px; }
+  .updates-release-summary { gap: 8px 14px; }
+  .updates-release-actions > .button, .updates-release-actions .updates-manager-actions > .button { flex: 1 1 100%; }
+  .updates-release-actions .updates-manager-actions { display: flex; }
+}
+.updates-connection-note { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }

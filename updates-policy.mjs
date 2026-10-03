@@ -44,7 +44,7 @@ function timestamp(at){
   if(typeof value!=='string'||!Number.isFinite(Date.parse(value)))fail('A valid timestamp is required.');
   return new Date(value).toISOString();
 }
-function authorIds(proposal){return [...new Set([proposal.authorId,...(Array.isArray(proposal.authorIds)?proposal.authorIds:[])].filter(id=>typeof id==='string'&&id))];}
+function authorIds(proposal){return [...new Set([...(proposal.kind==='release'?[]:[proposal.authorId]),...(Array.isArray(proposal.authorIds)?proposal.authorIds:[])].filter(id=>typeof id==='string'&&id))];}
 function assertEditable(proposal){
   if(!record(proposal)||!EDITABLE.has(proposal.status))fail('This update can no longer be changed or reviewed.','UPDATE_CLOSED',409);
 }
@@ -107,23 +107,87 @@ export function validateBundle(data){
   return {title,description,base,files};
 }
 async function bundleDigest(bundle,version){
-  const canonical=JSON.stringify({version,title:bundle.title,description:bundle.description,base:bundle.base,files:bundle.files});
+  const canonical=JSON.stringify({version,title:bundle.title,description:bundle.description,base:bundle.base,files:bundle.files,...(bundle.kind==='release'?{kind:'release',sources:bundle.sources}:{})});
   const bytes=await crypto.subtle.digest('SHA-256',encoder.encode(canonical));
   return [...new Uint8Array(bytes)].map(byte=>byte.toString(16).padStart(2,'0')).join('');
 }
 export async function createProposal(data,user,at){
   const account=identity(user),bundle=validateBundle(data),createdAt=timestamp(at);
+  if(data.kind!==undefined||data.sources!==undefined||data.releaseId!==undefined)fail('The shared update is built automatically from pending contributions.','INVALID_RELEASE');
   if(typeof data.id!=='string'||!UUID.test(data.id))fail('A valid unique update ID is required.','INVALID_ID');
   return {id:data.id.toLowerCase(),...bundle,authorId:account.id,authorName:account.name,authorIds:[account.id],version:1,digest:await bundleDigest(bundle,1),reviews:[],status:'draft',createdAt,updatedAt:createdAt};
 }
 export async function reviseProposal(old,data,user,at){
   const account=identity(user);assertEditable(old);
+  if(old.kind==='release'||old.sources!==undefined)fail('Rebuild the shared update from its current contributions.','INVALID_RELEASE');
   if(account.role!=='manager'&&account.id!==old.authorId)fail('Only the author or manager can replace this update.','FORBIDDEN',403);
   if(!record(data)||!Number.isSafeInteger(data.expectedVersion)||data.expectedVersion!==old.version||(data.expectedDigest!==undefined&&data.expectedDigest!==old.digest))fail('This update changed. Reload it before replacing its files.','VERSION_CONFLICT',409);
   const bundle=validateBundle(data),version=old.version+1;
   if(!Number.isSafeInteger(version))fail('The update version is invalid.','VERSION_CONFLICT',409);
   // Do not carry forward any staging/check/publication metadata from the old content.
   return {id:old.id,...bundle,authorId:old.authorId,authorName:old.authorName,authorIds:[...new Set([...authorIds(old),account.id])],version,digest:await bundleDigest(bundle,version),reviews:[],status:'draft',createdAt:old.createdAt,updatedAt:timestamp(at)};
+}
+
+/** Resolve exact contribution versions and combine their complete replacement files. */
+export async function combineProposals(data,proposals,user,at){
+  const account=identity(user);
+  if(!record(data)||typeof data.id!=='string'||!UUID.test(data.id))fail('A valid unique update ID is required.','INVALID_ID');
+  const id=data.id.toLowerCase();
+  if(!Array.isArray(proposals)||!Array.isArray(data.selected)||!data.selected.length||data.selected.length>12)fail('The shared update must contain between 1 and 12 pending contributions.','INVALID_SELECTION');
+  const records=new Map();
+  for(const proposal of proposals){
+    if(!record(proposal)||typeof proposal.id!=='string')continue;
+    const key=proposal.id.toLowerCase();
+    if(records.has(key))fail('The contribution list changed. Refresh before rebuilding the shared update.','INVALID_SELECTION',409);
+    records.set(key,proposal);
+  }
+  const old=records.get(id);
+  if(old){
+    assertEditable(old);
+    if(old.kind!=='release'||!Array.isArray(old.sources))fail('This ID belongs to a different update.','INVALID_RELEASE',409);
+  }
+  const chosen=new Set();
+  const selected=data.selected.map(ref=>{
+    if(!record(ref)||typeof ref.id!=='string'||!UUID.test(ref.id)||!DIGEST.test(ref.digest??''))fail('The shared update needs exact current contribution versions.','INVALID_SELECTION');
+    const key=ref.id.toLowerCase();
+    if(key===id||chosen.has(key))fail('The shared update must include each pending contribution once and cannot include itself.','INVALID_SELECTION');
+    chosen.add(key);
+    const proposal=records.get(key);
+    if(!proposal)fail('A pending contribution was removed. Rebuild the shared update.','SOURCE_MISSING',409);
+    if(proposal.kind==='release'||proposal.sources!==undefined)fail('Combined updates cannot include another combined update.','INVALID_SELECTION');
+    assertEditableSource(proposal);
+    if(proposal.digest!==ref.digest)fail(`“${proposal.title}” changed. Rebuild the shared update with its latest version.`,'SOURCE_CHANGED',409);
+    return proposal;
+  }).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+  const base=typeof data.base==='string'?data.base.toLowerCase():'';
+  if(!SHA.test(base))fail('The update must identify its exact 40-character base commit.','INVALID_BASE');
+  const files=new Map(),conflicts=new Set();
+  for(const source of selected){
+    if(source.base!==base)fail(`“${source.title}” must be rebased onto the current site version before combining.`,'SOURCE_BASE',409);
+    const bundle=validateBundle(source);
+    for(const file of bundle.files){
+      const previous=files.get(file.path);
+      if(previous&&previous.content!==file.content)conflicts.add(file.path);
+      else if(!previous)files.set(file.path,file);
+    }
+  }
+  if(conflicts.size){
+    const paths=[...conflicts].sort(),error=new UpdatePolicyError(`Pending contributions contain different replacements for: ${paths.join(', ')}. Resolve these files before rebuilding the shared update.`,'FILE_CONFLICT',409);
+    error.paths=paths;throw error;
+  }
+  const sources=selected.map(source=>({id:source.id,digest:source.digest,version:source.version,title:source.title,authorName:source.authorName}));
+  const bundle={...validateBundle({title:data.title??'Next site update',description:data.description??`Includes ${sources.map(source=>`“${source.title}” by ${source.authorName}`).join('; ')}.`,base,files:[...files.values()]}),kind:'release',sources};
+  if(old){
+    if(data.expectedVersion===undefined&&data.expectedDigest===undefined&&await bundleDigest(bundle,old.version)===old.digest)return copy(old);
+    if(!Number.isSafeInteger(data.expectedVersion)||data.expectedVersion!==old.version||data.expectedDigest!==old.digest)fail('The shared update changed. Refresh before rebuilding it.','VERSION_CONFLICT',409);
+  }else if(data.expectedVersion!==undefined||data.expectedDigest!==undefined)fail('The shared update no longer exists. Refresh the contribution list.','VERSION_CONFLICT',409);
+  const version=old?old.version+1:1;
+  if(!Number.isSafeInteger(version))fail('The update version is invalid.','VERSION_CONFLICT',409);
+  const updatedAt=timestamp(at);
+  return {id,...bundle,authorId:old?.authorId??account.id,authorName:old?.authorName??account.name,authorIds:[...new Set(selected.flatMap(authorIds))],version,digest:await bundleDigest(bundle,version),reviews:[],status:'draft',createdAt:old?.createdAt??updatedAt,updatedAt};
+}
+function assertEditableSource(proposal){
+  if(!EDITABLE.has(proposal.status))fail(`“${proposal.title}” can no longer be included in a combined update.`,'SOURCE_CLOSED',409);
 }
 export function reviewProposal(old,data,user,at,policy=DEFAULT_APPROVAL_POLICY){
   const account=identity(user);assertEditable(old);
@@ -172,9 +236,28 @@ export function readiness(proposal,{main,connected=false,proposals=[],activeAcco
   else if(checks.head!==proposal.github?.head||checks.base!==proposal.base)add('STALE_CHECKS','Checks do not match this exact update and site version.');
   if(!managerOverride&&[...latest.values()].some(review=>review.decision==='changes'))add('CHANGES_REQUESTED','A reviewer requested changes.');
   if(!managerOverride&&approvalCount<required)add('REVIEWS_PENDING',settings.mode==='manager'?'The manager’s sign-off is required.':`${required-approvalCount} more ${settings.mode==='agents'?'agent ':''}sign-off${required-approvalCount===1?' is':'s are'} required.`,true);
+  if(proposal.kind==='release'||proposal.sources!==undefined){
+    if(proposal.kind!=='release'||!Array.isArray(proposal.sources)||!proposal.sources.length||proposal.sources.length>12)add('INVALID_RELEASE','This combined update does not identify valid contribution versions.');
+    else{
+      const seen=new Set();
+      for(const ref of proposal.sources){
+        if(!record(ref)||!UUID.test(ref.id??'')||!DIGEST.test(ref.digest??'')||ref.id===proposal.id||seen.has(ref.id)){
+          add('INVALID_RELEASE','This combined update has an invalid or repeated contribution reference.');continue;
+        }
+        seen.add(ref.id);
+        const source=proposals.find(other=>other.id===ref.id);
+        if(!source){add('SOURCE_MISSING',`A contribution in this combined update was removed: “${ref.title}”.`);continue;}
+        if(source.kind==='release'||source.sources!==undefined)add('INVALID_RELEASE','Combined updates cannot include another combined update.');
+        if(source.digest!==ref.digest||source.version!==ref.version||source.base!==proposal.base)add('SOURCE_CHANGED',`“${ref.title}” changed. Rebuild and check the combined update again.`);
+        if(!EDITABLE.has(source.status)&&!(source.status==='published'&&source.releaseId===proposal.id))add('SOURCE_CLOSED',`“${ref.title}” can no longer be included. Rebuild the combined update.`);
+      }
+      if(proposals.some(source=>source.id!==proposal.id&&EDITABLE.has(source.status)&&source.kind!=='release'&&source.sources===undefined&&!seen.has(source.id)))add('NEW_SOURCES','New contributions are waiting. Rebuild and check the combined update with every pending contribution.');
+    }
+  }
   const paths=new Set((proposal.files??[]).map(file=>file.path.toLowerCase()));
   for(const other of proposals){
     if(other.id===proposal.id||!OPEN.has(other.status))continue;
+    if(Array.isArray(proposal.sources)&&proposal.sources.some(source=>source.id===other.id)||Array.isArray(other.sources)&&other.sources.some(source=>source.id===proposal.id))continue;
     const overlap=(other.files??[]).map(file=>file.path).filter(path=>paths.has(path.toLowerCase())).sort();
     if(overlap.length)warnings.push(`Also edited in “${other.title}”: ${overlap.join(', ')}. Publishing either update will require the other to be rebased.`);
   }
@@ -185,7 +268,8 @@ export function readiness(proposal,{main,connected=false,proposals=[],activeAcco
 /** Whitelist data exposed to authenticated room participants; never spread storage records. */
 export function publicProposal(proposal,repoInfo={}){
   const result={};
-  for(const key of ['id','title','description','authorId','authorName','version','digest','base','status','createdAt','updatedAt','publishedAt','publishedBy','publishedCommit','managerOverride','publishStartedAt','publishError'])if(proposal[key]!==undefined)result[key]=proposal[key];
+  for(const key of ['id','kind','title','description','authorId','authorName','version','digest','base','status','createdAt','updatedAt','publishedAt','publishedBy','publishedCommit','managerOverride','publishStartedAt','publishError','releaseId'])if(proposal[key]!==undefined)result[key]=proposal[key];
+  if(Array.isArray(proposal.sources))result.sources=proposal.sources.map(({id,digest,version,title,authorName})=>({id,digest,version,title,authorName}));
   result.authorIds=authorIds(proposal);
   result.files=(proposal.files??[]).map(({path,content})=>({path,content}));
   result.reviews=(proposal.reviews??[]).map(({reviewerId,reviewerName,reviewerRole,decision,body,digest,createdAt})=>({reviewerId,reviewerName,reviewerRole,decision,body,digest,createdAt}));
