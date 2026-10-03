@@ -51,8 +51,9 @@ function fixture(options={}) {
         return {mimeType:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWJ8AAAAASUVORK5CYII=',profilePath:PRIVATE,storageState:PRIVATE};
       },
       async close(){
-        this.calls.push('close');events.push({operation:'close',accountId:identity.accountId});this.closed=true;
+        this.calls.push('close');events.push({operation:'close',accountId:identity.accountId});
         if(options.close)await options.close(this,{auth,events,drivers});
+        this.closed=true;
       }
     };
     drivers.push(driver);return driver;
@@ -267,6 +268,50 @@ test('close releases a session and resource capacity only after authorized drive
   assert.equal(f.drivers[0].closed,true);
   failure(await invoke(f,'browser_observe',{session_id:session.sessionId}));
   const other=await open(f,beta);assert.notEqual(other.sessionId,session.sessionId);
+});
+
+test('failed close returns an error, quarantines all normal operations, and retains capacity',async()=>{
+  const f=fixture({maxSessions:1,close:async()=>{throw new Error(PRIVATE);}}),session=await open(f);
+  failure(await invoke(f,'browser_close',{session_id:session.sessionId}),'INTERNAL');assert.equal(f.drivers[0].closed,false);
+  for(const [name,args] of [['browser_open',{}],['browser_observe',{session_id:session.sessionId}],['browser_click',reference(session)],['browser_fill',{...reference(session),target_id:'draft',text:'Must not act'}],['browser_screenshot',{session_id:session.sessionId,observation_id:session.observation.id}]])failure(await invoke(f,name,args),'INTERNAL');
+  failure(await invoke(f,'browser_open',{},beta),'LIMIT');assert.equal(f.drivers.length,1);assert.equal(f.drivers[0].count,0);assert.equal(f.drivers[0].text,'');
+});
+
+test('an authorized close retry confirms teardown before releasing a quarantined capacity slot',async()=>{
+  let failClose=true;
+  const f=fixture({maxSessions:1,close:async()=>{if(failClose)throw new Error(PRIVATE);}}),session=await open(f);
+  failure(await invoke(f,'browser_close',{session_id:session.sessionId}),'INTERNAL');
+  failClose=false;assert.deepEqual(success(await invoke(f,'browser_close',{session_id:session.sessionId})),{closed:true});
+  assert.equal(f.drivers[0].closed,true);failure(await invoke(f,'browser_observe',{session_id:session.sessionId}),'NOT_FOUND');await open(f,beta);assert.equal(f.drivers.length,2);
+});
+
+test('shutdown reports a normalized failure when teardown is incomplete and permits cleanup retry',async()=>{
+  let failClose=true;
+  const f=fixture({close:async()=>{if(failClose)throw new Error(PRIVATE);}});await open(f);
+  await assert.rejects(f.controller.shutdown(),error=>{assert.equal(error.code,'INTERNAL');assert.ok(!error.message.includes(PRIVATE));return true;});assert.equal(f.drivers[0].closed,false);
+  failure(await invoke(f,'browser_open'),'NOT_FOUND');failClose=false;await f.controller.shutdown();assert.equal(f.drivers[0].closed,true);
+});
+
+test('failed cleanup of a revoked driver during startup retains detached quarantine capacity',async()=>{
+  const entered=deferred(),release=deferred();let failClose=true,closed=false;
+  const f=fixture({maxSessions:1,createDriver:async()=>{entered.resolve();await release.promise;return {observe:async()=>({title:'Fixture',status:'Ready',targets:[]}),click:async()=>{},fill:async()=>{},screenshot:async()=>({mimeType:'image/png',data:'iVBORw0KGgo='}),close:async()=>{if(failClose)throw new Error(PRIVATE);closed=true;}};}});
+  const pending=invoke(f,'browser_open');await entered.promise;f.auth.alpha.runId='replacement-run';release.resolve();failure(await pending,'STALE_SESSION');
+  failure(await invoke(f,'browser_open',{},beta),'LIMIT');await assert.rejects(f.controller.shutdown(),error=>error.code==='INTERNAL');assert.equal(closed,false);
+  failClose=false;await f.controller.shutdown();assert.equal(closed,true);
+});
+
+test('invalid driver contract with failed teardown is tracked as quarantined resource, not silently dropped',async()=>{
+  let failClose=true;
+  const f=fixture({maxSessions:1,createDriver:async()=>({observe:async()=>({title:'Fixture',status:'Ready',targets:[]}),close:async()=>{if(failClose)throw new Error(PRIVATE);}})});
+  failure(await invoke(f,'browser_open'),'INTERNAL');failure(await invoke(f,'browser_open',{},beta),'LIMIT');
+  await assert.rejects(f.controller.shutdown(),error=>error.code==='INTERNAL');failClose=false;await f.controller.shutdown();
+});
+
+test('session-ID collision with failed new-driver teardown retains quarantine without disturbing existing owner',async()=>{
+  const f=fixture({uuid:()=> 'collision',maxSessions:2,close:async driver=>{if(driver.binding.accountId===B)throw new Error(PRIVATE);}}),session=await open(f);
+  failure(await invoke(f,'browser_open',{},beta),'INTERNAL');success(await invoke(f,'browser_observe',{session_id:session.sessionId}));
+  failure(await invoke(f,'browser_open',{},beta),'LIMIT');assert.equal(f.drivers.length,2);
+  await assert.rejects(f.controller.shutdown(),error=>error.code==='INTERNAL');assert.equal(f.drivers[0].closed,true);assert.equal(f.drivers[1].closed,false);
 });
 
 test('strict schemas reject identity, profile, selector, URL, and JavaScript overrides',async()=>{
