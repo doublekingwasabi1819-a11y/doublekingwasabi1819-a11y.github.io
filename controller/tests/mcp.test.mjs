@@ -10,7 +10,7 @@ const names = [
 ];
 const requestContext = Object.freeze({fixturePrincipal: 'atlas-test'});
 
-async function wire(t, implementation, configuredController) {
+async function wire(t, implementation, configuredController, options = {}) {
   const calls = [];
   const controller = configuredController || {async callTool(invocation, context) {
     calls.push({invocation, context});
@@ -19,7 +19,7 @@ async function wire(t, implementation, configuredController) {
       content: [{type: 'text', text: '{"ok":true}'}]
     };
   }};
-  const server = createControllerMcp({controller, requestContext});
+  const server = createControllerMcp({controller, requestContext, ...options});
   const client = new Client({name: 'relay-fixture-wire-test', version: '0.1.0'});
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   t.after(async () => {
@@ -37,6 +37,38 @@ test('MCP factory requires an explicit controller and trusted request context', 
     {controller: {callTool() {}}, requestContext: 'worker'}]) {
     assert.throws(() => createControllerMcp(options), /controller and trusted request context/);
   }
+});
+
+test('trusted Relay target advertises only permitted navigation and masked-view tools', async t => {
+  const {client, calls} = await wire(t, undefined, undefined, {target: 'relay'});
+  assert.equal(client.getServerVersion().name, 'relay-browser-controller');
+  const {tools} = await client.listTools();
+  assert.deepEqual(tools.map(tool => tool.name), names.filter(name => name !== 'browser_fill'));
+  for (const tool of tools) {
+    assert.equal(tool.annotations.openWorldHint, true);
+    assert.doesNotMatch(tool.description, /test fixture/i);
+    assert.match(tool.description, /Relay/);
+    assert.equal(Object.hasOwn(tool.inputSchema.properties || {}, 'target'), false);
+  }
+  assert.match(tools.find(tool => tool.name === 'browser_click').description, /navigation or Refresh/);
+  assert.match(tools.find(tool => tool.name === 'browser_screenshot').description, /masked/);
+  await assert.rejects(client.callTool({name: 'browser_fill', arguments: {
+    session_id: 'fixture', observation_id: 'fixture', target_id: 'fixture', text: 'blocked'
+  }}), error => error.code === -32602);
+  const injected = await client.callTool({name: 'browser_open', arguments: {target: 'fixture'}});
+  assert.equal(injected.isError, true); assert.equal(calls.length, 0);
+});
+
+test('MCP target is a strict trusted factory option and lifecycle methods are not model-callable', async t => {
+  const controller = {callTool() {}};
+  for (const target of [null, 'arbitrary', {}, ['relay']]) {
+    assert.throws(() => createControllerMcp({controller, requestContext, target}), /trusted request context/);
+  }
+  const {client, calls} = await wire(t);
+  for (const name of ['revokeContext', 'snapshot', 'shutdown']) {
+    await assert.rejects(client.callTool({name, arguments: {}}), error => error.code === -32602);
+  }
+  assert.equal(calls.length, 0);
 });
 
 test('real MCP initialize and tools/list advertise six strict fixture-only tools', async t => {

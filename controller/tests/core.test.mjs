@@ -392,3 +392,100 @@ test('an unauthenticated caller cannot close another worker by supplying its ses
   assert.equal(f.drivers[0].closed,false);
   success(await invoke(f,'browser_observe',{session_id:session.sessionId}));
 });
+
+test('failed authorization from an old grant cannot close a newer run for the same account',async()=>{
+  const f=fixture(),old=await open(f);
+  f.auth.beta=binding(A,AGENT_A,'replacement-run');
+  failure(await invoke(f,'browser_open',{},beta),'STALE_SESSION');
+  const newer=await open(f,beta);
+  assert.equal(f.drivers[0].closed,true);assert.equal(f.drivers[1].closed,false);
+  delete f.auth.alpha;
+  failure(await invoke(f,'browser_open'),'AUTH_REQUIRED');
+  failure(await f.controller.snapshot(alpha),'AUTH_REQUIRED');
+  assert.deepEqual(success(await f.controller.revokeContext(alpha)),{closed:false});
+  assert.equal(f.drivers[1].closed,false);
+  await observed(f,newer,beta);
+  assert.notEqual(old.sessionId,newer.sessionId);
+});
+
+test('authorization that becomes invalid while a new run opens cannot close that newer session at recheck',async()=>{
+  const entered=deferred(),release=deferred();let block=false,blocked=false;
+  const f=fixture({authorize:async(context,{auth})=>{
+    const current=auth[context?.connection];if(!current)throw new Error(PRIVATE);
+    const value=structuredClone(current);
+    if(context===alpha&&block&&!blocked){blocked=true;entered.resolve();await release.promise;}
+    return value;
+  }});
+  await open(f);block=true;
+  const oldRequest=invoke(f,'browser_open');await entered.promise;
+  f.auth.beta=binding(A,AGENT_A,'new-run');
+  failure(await invoke(f,'browser_open',{},beta),'STALE_SESSION');
+  const newer=await open(f,beta);delete f.auth.alpha;release.resolve();
+  failure(await oldRequest,'AUTH_REQUIRED');
+  assert.equal(f.drivers[1].closed,false);
+  await observed(f,newer,beta);
+});
+
+test('trusted revokeContext retires only its exact verified binding and is safely idempotent',async()=>{
+  const f=fixture();await open(f);const other=await open(f,beta);delete f.auth.alpha;
+  assert.deepEqual(success(await f.controller.revokeContext(alpha)),{closed:true});
+  assert.equal(f.drivers[0].closed,true);assert.equal(f.drivers[1].closed,false);
+  assert.deepEqual(success(await f.controller.revokeContext(alpha)),{closed:false});
+  for(const unknown of [null,{},'alpha',{connection:'beta',session_id:other.sessionId}]){
+    assert.deepEqual(success(await f.controller.revokeContext(unknown)),{closed:false});
+  }
+  await observed(f,other,beta);
+  failure(await invoke(f,'revokeContext',{session_id:other.sessionId},beta),'UNKNOWN_TOOL');
+});
+
+test('failed lifecycle teardown retains exact grant and capacity until a cleanup retry succeeds',async()=>{
+  let failClose=true;
+  const f=fixture({maxSessions:1,close:async()=>{if(failClose)throw new Error(PRIVATE);}});
+  await open(f);failure(await f.controller.revokeContext(alpha),'INTERNAL');
+  failure(await invoke(f,'browser_open',{},beta),'LIMIT');
+  failClose=false;
+  assert.deepEqual(success(await f.controller.revokeContext(alpha)),{closed:true});
+  const replacement=await open(f,beta);assert.equal(typeof replacement.sessionId,'string');
+});
+
+test('driver-side authority failures release the exact core session after driver closes itself',async()=>{
+  for(const operation of ['observe','click','fill','screenshot','snapshot']){
+    let revoked=false;
+    const fault=async driver=>{if(revoked){driver.closed=true;throw Object.assign(new Error(PRIVATE),{code:'AUTH_REQUIRED'});}};
+    const f=fixture({
+      observe:async driver=>{await fault(driver);return {title:'Fixture',status:'Ready',targets:[{id:'increment',role:'button',name:'Increment'},{id:'draft',role:'textbox',name:'Draft'}]};},
+      click:fault,fill:fault,
+      screenshot:async driver=>{await fault(driver);return {mimeType:'image/png',data:'iVBORw0KGgo='};}
+    });
+    const first=await open(f),other=await open(f,beta);revoked=true;
+    const invocation=operation==='snapshot'?f.controller.snapshot(alpha):invoke(f,`browser_${operation}`,
+      operation==='observe'?{session_id:first.sessionId}:operation==='fill'?{...reference(first),target_id:'draft',text:'Fixture'}:
+      operation==='screenshot'?{session_id:first.sessionId,observation_id:first.observation.id}:reference(first));
+    failure(await invocation,'AUTH_REQUIRED');assert.equal(f.drivers[0].closed,true);
+    assert.equal(f.drivers[1].closed,false);
+    revoked=false;
+    const reopened=await open(f);assert.notEqual(reopened.sessionId,first.sessionId);
+    await observed(f,other,beta);
+    assert.equal(f.drivers[0].calls.filter(call=>call==='close').length,1);
+  }
+});
+
+test('viewer snapshot preserves current observation handles and excludes target or session metadata',async()=>{
+  const f=fixture(),session=await open(f),callsBefore=f.drivers[0].calls.filter(call=>call==='observe').length;
+  const first=await f.controller.snapshot(alpha),second=await f.controller.snapshot(alpha);
+  assert.deepEqual(success(first),{state:'open'});assert.deepEqual(success(second),{state:'open'});
+  assert.deepEqual(first.content.map(value=>value.type),['image']);
+  assert.equal(first.content[0].mimeType,'image/png');
+  assert.equal(f.drivers[0].calls.filter(call=>call==='observe').length,callsBefore);
+  assert.equal(f.approvals.length,1);
+  success(await invoke(f,'browser_click',reference(session)));
+  assert.equal(f.drivers[0].count,1);
+});
+
+test('viewer snapshots neither extend an expired observation nor bypass live authorization',async()=>{
+  const f=fixture(),session=await open(f);f.setClock(61001);
+  success(await f.controller.snapshot(alpha));
+  failure(await invoke(f,'browser_click',reference(session)),'STALE_OBSERVATION');
+  delete f.auth.alpha;failure(await f.controller.snapshot(alpha),'AUTH_REQUIRED');
+  assert.equal(f.drivers[0].closed,true);assert.equal(f.drivers[0].count,0);
+});
