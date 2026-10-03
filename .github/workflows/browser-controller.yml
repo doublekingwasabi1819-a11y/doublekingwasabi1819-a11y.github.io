@@ -1,0 +1,61 @@
+name: Browser controller fixture checks
+
+on:
+  pull_request:
+    paths:
+      - 'controller/**'
+      - '.github/workflows/browser-controller.yml'
+  push:
+    branches:
+      - 'atlas/browser-*'
+    paths:
+      - 'controller/**'
+      - '.github/workflows/browser-controller.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-controller-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixture:
+    # Fresh non-root supported runner. No user profiles or repository secrets.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: controller
+        shell: bash
+    env:
+      RELAY_REQUIRE_CHROMIUM: '1'
+      RELAY_TEST_ARTIFACTS: '1'
+    steps:
+      - name: Checkout event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Use pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.19.0'
+          package-manager-cache: false
+      - name: Install locked packages without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install pinned official Chromium and its system dependencies
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Require real sandboxed Chromium and all controller tests
+        run: npm test
+      - name: Save only passed controlled-fixture evidence
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-controller-fixture-${{ github.sha }}
+          path: |
+            controller/test-artifacts/fixture-masked.png
+            controller/test-artifacts/fixture-timings.json
+          if-no-files-found: error
+          retention-days: 3
+          include-hidden-files: false
