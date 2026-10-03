@@ -55,11 +55,11 @@ function observationFor(value,observationId,at) {
 /** Trusted host hooks only. This prototype exposes a fixed fixture, not arbitrary websites. */
 export function createBrowserController({authorize,authorizeAction,createDriver,now=Date.now,uuid=randomUUID,maxSessions=8,observationTTL=60000}={}) {
   if(typeof authorize!=='function'||typeof createDriver!=='function'||(authorizeAction!==undefined&&typeof authorizeAction!=='function')||typeof now!=='function'||typeof uuid!=='function'||!Number.isInteger(maxSessions)||maxSessions<1||maxSessions>64||!Number.isFinite(observationTTL)||observationTTL<=0||observationTTL>600000)throw new TypeError('Valid trusted controller hooks and limits are required.');
-  const sessions=new Map(),owners=new Map(),queues=new Map(),knownContexts=new WeakMap();
+  const sessions=new Map(),owners=new Map(),queues=new Map(),knownContexts=new WeakMap(),quarantined=new Set();
   let reservations=0,closed=false;
   async function auth(context){try{return bindingFor(await authorize(context));}catch(e){if(e instanceof BrowserControllerError)throw safe(e);if(e?.code==='STALE_SESSION')fail('STALE_SESSION');if(e?.code==='FORBIDDEN')fail('FORBIDDEN');fail('AUTH_REQUIRED');}}
   function enqueue(owner,operation){const prior=queues.get(owner)||Promise.resolve();const run=prior.catch(()=>{}).then(operation);const tail=run.catch(()=>{});queues.set(owner,tail);tail.finally(()=>{if(queues.get(owner)===tail)queues.delete(owner);});return run;}
-  async function dispose(s){sessions.delete(s.id);if(owners.get(key(s.binding))===s.id)owners.delete(key(s.binding));s.observation=null;try{await s.driver.close();}catch{/* Do not return browser internals or credentials. */}}
+  async function dispose(s){s.observation=null;s.quarantined=true;try{await s.driver.close();}catch{if(sessions.get(s.id)!==s)quarantined.add(s);return false;}if(sessions.get(s.id)===s)sessions.delete(s.id);if(owners.get(key(s.binding))===s.id)owners.delete(key(s.binding));quarantined.delete(s);return true;}
   async function recheck(initial,context,s){let current;try{current=await auth(context);}catch(error){if(s)await dispose(s);throw error;}if(!same(initial,current)){if(s)await dispose(s);fail('STALE_SESSION');}return current;}
   async function observe(s){s.observation=null;const next=observationFor(await s.driver.observe(),uuid(),now());if(!id(next.public.id))fail('INTERNAL');s.observation=next;return structuredClone(next.public);}
   function currentObservation(s,args){const o=s.observation;if(!o||o.public.id!==args.observation_id||now()-o.at>observationTTL||now()<o.at)fail('STALE_OBSERVATION');return o.public;}
@@ -86,16 +86,17 @@ export function createBrowserController({authorize,authorizeAction,createDriver,
           const binding=await recheck(initial,requestContext,s);
           if(s&&!same(s.binding,binding)){await dispose(s);fail('STALE_SESSION');}
           if(args.session_id&&!s)fail('NOT_FOUND');
+          if(s?.quarantined&&name!=='browser_close')fail('INTERNAL');
           if(mutates)await actionPermission(name,args,binding,requestContext);
           await recheck(binding,requestContext,s);
           if(name==='browser_open') {
             if(!s){
-              if(sessions.size+reservations>=maxSessions)fail('LIMIT');reservations++;
+              if(sessions.size+quarantined.size+reservations>=maxSessions)fail('LIMIT');reservations++;
               try {
                 const driver=await createDriver({binding});
-                if(!driver||['observe','click','fill','screenshot','close'].some(k=>typeof driver[k]!=='function')){try{await driver?.close?.();}catch{}fail('INTERNAL');}
+                if(!driver||['observe','click','fill','screenshot','close'].some(k=>typeof driver[k]!=='function')){if(driver)await dispose({id:null,binding,driver,observation:null});fail('INTERNAL');}
                 const sessionId=uuid();
-                if(!id(sessionId)||sessions.has(sessionId)){try{await driver.close();}catch{}fail('INTERNAL');}
+                if(!id(sessionId)||sessions.has(sessionId)){await dispose({id:null,binding,driver,observation:null});fail('INTERNAL');}
                 s={id:sessionId,binding,driver,observation:null};
                 // A revoke during slow startup cannot create an accessible browser.
                 await recheck(binding,requestContext,s);sessions.set(s.id,s);owners.set(owner,s.id);
@@ -104,7 +105,7 @@ export function createBrowserController({authorize,authorizeAction,createDriver,
             let observation;try{observation=await observe(s);await recheck(binding,requestContext,s);}catch(e){await dispose(s);throw e;}
             return result({sessionId:s.id,observation});
           }
-          if(name==='browser_close'){await dispose(s);return result({closed:true});}
+          if(name==='browser_close'){if(!await dispose(s))fail('INTERNAL');return result({closed:true});}
           if(name==='browser_observe'){const observation=await observe(s);await recheck(binding,requestContext,s);return result({sessionId:s.id,observation});}
           const observation=currentObservation(s,args);
           if(name==='browser_screenshot') {
@@ -122,6 +123,6 @@ export function createBrowserController({authorize,authorizeAction,createDriver,
         });
       }catch(error){const e=safe(error);return {isError:true,structuredContent:{error:{code:e.code,message:e.message}},content:[{type:'text',text:e.message}]};}
     },
-    async shutdown(){closed=true;await Promise.all([...queues.values()]);await Promise.all([...sessions.values()].map(dispose));}
+    async shutdown(){closed=true;await Promise.all([...queues.values()]);const outcomes=await Promise.all([...sessions.values(),...quarantined].map(dispose));if(outcomes.some(x=>x===false))throw new BrowserControllerError('INTERNAL');}
   };
 }
