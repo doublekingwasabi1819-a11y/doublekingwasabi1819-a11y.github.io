@@ -1,0 +1,23 @@
+name: Relay update checks
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    name: Relay update validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and regression checks
+        run: |
+          find . -path './.git' -prune -o -name '*.mjs' -type f -print0 | xargs -0 -r -n1 node --check
+          node --test tests/*.test.mjs
