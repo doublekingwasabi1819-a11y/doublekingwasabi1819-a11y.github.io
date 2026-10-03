@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateBundle,createProposal,reviseProposal,reviewProposal,readiness,publicProposal,UpdatePolicyError,approvalPolicy,mayReview} from '../updates-policy.mjs';
+import {validateBundle,createProposal,reviseProposal,combineProposals,reviewProposal,readiness,publicProposal,UpdatePolicyError,approvalPolicy,mayReview} from '../updates-policy.mjs';
 
 const BASE='a'.repeat(40),HEAD='b'.repeat(40),OTHER='c'.repeat(40),AT='2026-10-02T23:00:00Z';
 const author={id:'atlas',name:'Atlas',role:'worker'};
@@ -195,4 +195,158 @@ test('manager override bypasses review count and objections but retains every te
   assert.equal(readiness(objection,ctx).ready,true);
   for(const bad of [{...p,base:OTHER},{...p,checks:{state:'failure'}},{...p,checks:{state:'pending'}},{...p,status:'draft'}])assert.equal(readiness(bad,ctx).ready,false);
   assert.equal(readiness(p,{...ctx,proposals:[{...p,id:'other',status:'publishing'}]}).ready,false);
+});
+
+const combination=(sources,extra={})=>({id:crypto.randomUUID(),base:BASE,selected:sources.map(({id,digest})=>({id,digest})),...extra});
+const combine=(sources,user=manager,extra={})=>combineProposals(combination(sources,extra),sources,user,AT);
+
+test('combined release resolves full files and contributors, deduplicates identical replacements, and leaves sources untouched',async()=>{
+  const first=await createProposal(bundle({title:'Inbox layout',files:[{path:'shared.css',content:'.shared {}'},{path:'inbox.js',content:'export const inbox = 1;'}]}),author,AT);
+  const second=await createProposal(bundle({title:'Board layout',files:[{path:'shared.css',content:'.shared {}'},{path:'board.css',content:'.board {}'}]}),bob,AT);
+  const original=structuredClone([first,second]);
+  const release=await combine([first,second]);
+  assert.equal(release.kind,'release');assert.equal(release.title,'Next site update');assert.equal(release.status,'draft');assert.equal(release.authorId,'manager');assert.equal(release.version,1);
+  assert.deepEqual(release.files.map(file=>file.path),['board.css','inbox.js','shared.css']);
+  assert.deepEqual(new Set(release.authorIds),new Set(['atlas','bob']));
+  assert.equal(release.sources.length,2);assert.deepEqual(new Set(release.sources.map(source=>source.digest)),new Set([first.digest,second.digest]));
+  assert.match(release.description,/Inbox layout/);assert.match(release.description,/Board layout/);
+  assert.deepEqual(release.reviews,[]);assert.equal(release.github,undefined);assert.deepEqual([first,second],original);
+});
+
+test('active workers may prepare releases but guests and disabled accounts cannot',async()=>{
+  const first=await proposal();
+  assert.equal((await combine([first],bob)).authorId,'bob');
+  for(const bad of [null,{...bob,role:'guest'},{...bob,enabled:false},{...bob,disabled:true}])await rejectsCode(()=>combine([first],bad),'FORBIDDEN');
+});
+
+test('release digests bind exact source identities and versions and are deterministic across input order',async()=>{
+  const first=await proposal(),second=await createProposal(bundle({files:[{path:'board.css',content:'.board {}'}]}),bob,AT);
+  const release=await combine([first,second]),reverse=await combine([second,first]);
+  assert.equal(release.digest,reverse.digest);assert.notEqual(release.id,reverse.id);
+  const sameFilesDifferentSource=await createProposal({...bundle(),files:first.files},author,AT);
+  assert.equal(sameFilesDifferentSource.digest,first.digest);
+  const replacement=await combine([sameFilesDifferentSource,second]);assert.notEqual(release.digest,replacement.digest);
+});
+
+test('different complete replacements report every conflicting path without merging arbitrary content',async()=>{
+  const first=await createProposal(bundle({files:[{path:'a.js',content:'first'},{path:'b.css',content:'first'}]}),author,AT);
+  const second=await createProposal(bundle({files:[{path:'a.js',content:'second'},{path:'b.css',content:'second'}]}),bob,AT);
+  await assert.rejects(()=>combine([first,second]),error=>error instanceof UpdatePolicyError&&error.code==='FILE_CONFLICT'&&error.status===409&&assert.deepEqual(error.paths,['a.js','b.css'])===undefined);
+});
+
+test('combined bundles enforce aggregate byte and file limits and cross-source path casing',async()=>{
+  const make=files=>createProposal(bundle({files}),author,AT);
+  const largeA=await make([{path:'a.txt',content:'x'.repeat(200000)},{path:'b.txt',content:'x'.repeat(200000)}]);
+  const largeB=await make([{path:'c.txt',content:'x'.repeat(200000)},{path:'d.txt',content:'x'.repeat(200000)}]);
+  await rejectsCode(()=>combine([largeA,largeB]),'BUNDLE_LIMIT');
+  const manyA=await make(Array.from({length:21},(_,i)=>({path:`a${i}.txt`,content:''}))),manyB=await make(Array.from({length:20},(_,i)=>({path:`b${i}.txt`,content:''})));
+  await rejectsCode(()=>combine([manyA,manyB]),'FILE_LIMIT');
+  for(const paths of [['A.css','a.css'],['Assets/a.js','assets/b.js'],['data.json','data.json/file.js']]){
+    const sources=await Promise.all(paths.map(path=>make([{path,content:'same'}])));
+    await rejectsCode(()=>combine(sources),'DUPLICATE_PATH');
+  }
+});
+
+test('selection references must be unique, present, current, editable and from the exact common base',async()=>{
+  const first=await proposal(),input=combination([first]);
+  await rejectsCode(()=>combineProposals({...input,selected:[]},[first],manager,AT),'INVALID_SELECTION');
+  await rejectsCode(()=>combineProposals({...input,selected:Array.from({length:13},()=>input.selected[0])},[first],manager,AT),'INVALID_SELECTION');
+  await rejectsCode(()=>combineProposals({...input,selected:[input.selected[0],input.selected[0]]},[first],manager,AT),'INVALID_SELECTION');
+  await rejectsCode(()=>combineProposals({...input,selected:[{id:'fake',digest:first.digest}]},[first],manager,AT),'INVALID_SELECTION');
+  await rejectsCode(()=>combineProposals({...input,selected:[{id:first.id,digest:'f'.repeat(64)}]},[first],manager,AT),'SOURCE_CHANGED');
+  await rejectsCode(()=>combineProposals(input,[],manager,AT),'SOURCE_MISSING');
+  for(const status of ['publishing','published','withdrawn'])await rejectsCode(()=>combineProposals(input,[{...first,status}],manager,AT),'SOURCE_CLOSED');
+  await rejectsCode(()=>combineProposals({...input,base:OTHER},[first],manager,AT),'SOURCE_BASE');
+  await rejectsCode(()=>combineProposals({...input,base:'main'},[first],manager,AT),'INVALID_BASE');
+  await rejectsCode(()=>combineProposals({...input,id:'fake'},[first],manager,AT),'INVALID_ID');
+});
+
+test('release references cannot point to themselves, nested releases or an existing individual proposal ID',async()=>{
+  const first=await proposal(),release=await combine([first]);
+  await rejectsCode(()=>combineProposals(combination([first],{id:first.id}),[first],manager,AT),'INVALID_RELEASE');
+  await rejectsCode(()=>combineProposals({...combination([first]),selected:[{id:release.id,digest:release.digest}]},[first,release],manager,AT),'INVALID_SELECTION');
+  await rejectsCode(()=>combineProposals(combination([release],{id:release.id}),[first,release],manager,AT),'INVALID_SELECTION');
+  await rejectsCode(()=>combine([{...first,sources:[]}]),'INVALID_SELECTION');
+  await rejectsCode(()=>createProposal(bundle({kind:'release',sources:[]}),manager,AT),'INVALID_RELEASE');
+});
+
+test('release retries preserve staged metadata and reviews only when the complete source-bound digest matches',async()=>{
+  const first=await proposal(),input=combination([first]),release=staged(approve(await combineProposals(input,[first],manager,AT),manager));
+  const retry=await combineProposals(input,[first,release],bob,'2026-10-03T00:00:00Z');
+  assert.deepEqual(retry,release);assert.notEqual(retry,release);retry.reviews[0].body='mutated';assert.notEqual(retry.reviews[0].body,release.reviews[0].body);
+  await rejectsCode(()=>combineProposals({...input,title:'Changed release'},[first,release],manager,AT),'VERSION_CONFLICT');
+});
+
+test('rebuilding an exact current release resets reviews and checks and preserves the creator only as attribution',async()=>{
+  const first=await proposal(),input=combination([first]),release=staged(approve(await combineProposals(input,[first],manager,AT),manager));
+  const changed=await reviseProposal(first,{...bundle({files:[{path:'inbox.css',content:'changed'}]}),expectedVersion:first.version,expectedDigest:first.digest},author,AT);
+  const revisedInput={...input,selected:[{id:changed.id,digest:changed.digest}],expectedVersion:release.version,expectedDigest:release.digest};
+  const rebuilt=await combineProposals(revisedInput,[changed,release],steve,'2026-10-03T00:00:00Z');
+  assert.equal(rebuilt.id,release.id);assert.equal(rebuilt.version,2);assert.equal(rebuilt.createdAt,release.createdAt);assert.notEqual(rebuilt.updatedAt,release.updatedAt);assert.equal(rebuilt.authorId,'manager');
+  assert.deepEqual(new Set(rebuilt.authorIds),new Set(['atlas']));assert.equal(mayReview(rebuilt,steve),true);
+  assert.notEqual(rebuilt.digest,release.digest);assert.deepEqual(rebuilt.reviews,[]);assert.equal(rebuilt.status,'draft');assert.equal(rebuilt.github,undefined);assert.equal(rebuilt.checks,undefined);
+  for(const extra of [{expectedVersion:0},{expectedDigest:'f'.repeat(64)},{expectedDigest:undefined}])await rejectsCode(()=>combineProposals({...revisedInput,...extra},[changed,release],manager,AT),'VERSION_CONFLICT');
+  await rejectsCode(()=>reviseProposal(release,{...bundle(),expectedVersion:1,expectedDigest:release.digest},manager,AT),'INVALID_RELEASE');
+  await rejectsCode(()=>combineProposals(revisedInput,[changed,{...release,status:'publishing'}],manager,AT),'UPDATE_CLOSED');
+});
+
+test('a noncontributing worker can prepare and review the shared release while every source code author stays excluded',async()=>{
+  const first=await proposal(),second=await createProposal(bundle({files:[{path:'board.css',content:'board'}]}),bob,AT);
+  const release=staged(await combine([first,second],steve));
+  assert.equal(release.authorId,'steve');assert.deepEqual(new Set(release.authorIds),new Set(['atlas','bob']));
+  assert.equal(mayReview(release,steve,{mode:'one',allowSelfApproval:false}),true);
+  for(const sourceAuthor of [author,bob])assert.equal(mayReview(release,sourceAuthor,{mode:'one',allowSelfApproval:false}),false);
+  const reviewed=approve(release,steve),ctx=context({proposals:[first,second,reviewed],policy:{mode:'one',allowSelfApproval:false}});
+  assert.equal(readiness(reviewed,ctx).ready,true);assert.equal(readiness(reviewed,ctx).approvalCount,1);
+  assert.deepEqual(new Set(publicProposal(release,ctx).authorIds),new Set(['atlas','bob']));
+});
+
+test('source approvals never approve the release and all source authors are excluded unless self-sign-off is enabled',async()=>{
+  const first=approve(await proposal(),steve),second=approve(await createProposal(bundle({files:[{path:'board.css',content:'board'}]}),bob,AT),steve);
+  const release=staged(await combine([first,second]));
+  assert.deepEqual(release.reviews,[]);assert.equal(mayReview(release,author),false);assert.equal(mayReview(release,bob),false);assert.equal(mayReview(release,steve),true);
+  assert.equal(readiness(release,context({proposals:[first,second,release]})).approvalCount,0);
+  const independent=approve(release,steve);
+  assert.equal(readiness(independent,context({proposals:[first,second,release],policy:{mode:'one',allowSelfApproval:false}})).ready,true);
+  throwsCode(()=>approve(release,bob),'REVIEW_FORBIDDEN');
+  const policy={mode:'agents',allowSelfApproval:true},self=reviewProposal(release,{digest:release.digest,decision:'approve'},bob,AT,policy);
+  assert.equal(readiness(self,context({proposals:[first,second,release],policy})).approvalCount,1);
+});
+
+test('release readiness blocks missing, changed and closed source records even with manager approval override',async()=>{
+  const first=await proposal(),release=staged(await combine([first]));
+  const ctx=sources=>context({proposals:[...sources,release],managerOverride:true});
+  assert.equal(readiness(release,ctx([first])).ready,true);
+  const cases=[
+    [[], 'SOURCE_MISSING'],
+    [[{...first,digest:'f'.repeat(64)}],'SOURCE_CHANGED'],
+    [[{...first,version:2}],'SOURCE_CHANGED'],
+    [[{...first,base:OTHER}],'SOURCE_CHANGED'],
+    [[{...first,status:'withdrawn'}],'SOURCE_CLOSED'],
+    [[{...first,status:'published',releaseId:crypto.randomUUID()}],'SOURCE_CLOSED']
+  ];
+  for(const [sources,code] of cases){const gate=readiness(release,ctx(sources));assert.equal(gate.ready,false,code);assert.ok(gate.blockers.some(item=>item.code===code),code);}
+  assert.equal(readiness(release,ctx([{...first,status:'published',releaseId:release.id}])).ready,true);
+});
+
+test('an additional pending contribution invalidates an all-pending release until rebuilt',async()=>{
+  const first=await proposal(),release=staged(await combine([first])),second=await createProposal(bundle({files:[{path:'board.css',content:'board'}]}),bob,AT);
+  const ctx=extra=>context({proposals:[first,release,...extra],managerOverride:true});
+  const gate=readiness(release,ctx([second]));assert.equal(gate.ready,false);assert.ok(gate.blockers.some(item=>item.code==='NEW_SOURCES'));
+  for(const status of ['published','withdrawn'])assert.equal(readiness(release,ctx([{...second,status}])).ready,true);
+  assert.equal(readiness({...release,status:'published'},ctx([second])).state,'published');
+});
+
+test('source-release overlap warnings are suppressed in both directions while unrelated overlaps still warn',async()=>{
+  const first=staged(await proposal()),release=staged(await combine([first])),other=await createProposal(bundle(),bob,AT);
+  const ctx=context({proposals:[first,release,other],managerOverride:true});
+  assert.equal(readiness(first,ctx).warnings.length,1);assert.equal(readiness(release,ctx).warnings.length,1);
+  const solo=context({proposals:[first,release],managerOverride:true});assert.deepEqual(readiness(first,solo).warnings,[]);assert.deepEqual(readiness(release,solo).warnings,[]);
+});
+
+test('release public projection whitelists copied source details and publication linkage',async()=>{
+  const first=await proposal(),release=await combine([first]);release.sources[0].privateToken='hidden';release.privateToken='hidden';
+  const visible=publicProposal(release,context({proposals:[first,release]}));assert.equal(visible.kind,'release');assert.equal(visible.privateToken,undefined);assert.equal(visible.sources[0].privateToken,undefined);
+  visible.sources[0].title='mutated';assert.notEqual(visible.sources[0].title,release.sources[0].title);
+  assert.equal(publicProposal({...first,releaseId:release.id},context()).releaseId,release.id);
 });

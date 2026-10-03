@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createUpdatesHandler,createUpdatesRPC} from '../backend/updates-handler.mjs';
 import {createGitHubPublisher,REPOSITORY} from '../backend/updates-github.mjs';
-import {createProposal,reviewProposal} from '../updates-policy.mjs';
+import {createProposal,combineProposals,reviewProposal} from '../updates-policy.mjs';
 
 const BASE='a'.repeat(40),HEAD='b'.repeat(40),OTHER='c'.repeat(40);
 const AT=Date.parse('2026-10-02T23:00:00Z');
@@ -10,8 +10,11 @@ const ORIGIN='https://doublekingwasabi1819-a11y.github.io';
 const users={atlas:{id:'atlas',name:'Atlas',role:'worker'},bob:{id:'bob',name:'Bob',role:'worker'},steve:{id:'steve',name:'Steve',role:'worker'},manager:{id:'manager',name:'Owner',role:'manager'}};
 const error=(code,message='Synthetic test error',status=409)=>Object.assign(new Error(message),{code,status});
 const bundle=extra=>({id:crypto.randomUUID(),title:'Inbox update',description:'Keep the composer visible.',base:BASE,files:[{path:'inbox.css',content:'.inbox { display:grid; }'}],...extra});
+const fixtureSources=new Map();
 async function proposal({approved=true,staged=true,...extra}={}){
-  let p=await createProposal(bundle(),users.atlas,new Date(AT).toISOString());
+  const source=await createProposal(bundle(),users.atlas,new Date(AT).toISOString());
+  let p=await combineProposals({id:crypto.randomUUID(),base:BASE,selected:[{id:source.id,digest:source.digest}]},[source],users.atlas,new Date(AT).toISOString());
+  fixtureSources.set(p.id,source);
   if(approved)for(const user of [users.bob,users.steve])p=reviewProposal(p,{digest:p.digest,decision:'approve',body:'Reviewed the files.'},user,new Date(AT).toISOString());
   if(staged)Object.assign(p,{status:'staged',github:{head:HEAD,branch:'relay-update/'+p.id,pr:1,url:'https://github.com/'+REPOSITORY+'/pull/1'},checks:{state:'success',head:HEAD,base:BASE}});
   return {...p,...extra};
@@ -19,7 +22,8 @@ async function proposal({approved=true,staged=true,...extra}={}){
 
 // A compare-and-swap contract fixture. Real SQL ACLs require a database test.
 function database(proposals=[],{loseFirstAcknowledgement=false,policy={mode:'agents',allowSelfApproval:false}}={}){
-  let records=structuredClone(proposals),revision=0,writes=0;
+  const sources=proposals.flatMap(p=>fixtureSources.has(p.id)&&!proposals.some(x=>x.id===fixtureSources.get(p.id).id)?[fixtureSources.get(p.id)]:[]);
+  let records=structuredClone([...proposals,...sources]),revision=0,writes=0;
   const calls=[];
   const rpc=async(action,token,data={})=>{
     calls.push({action,token,data:structuredClone(data)});
@@ -71,11 +75,12 @@ test('workers cannot publish or forge proposal identity, status, checks or revie
   const p=await proposal(),db=database([p]),pub=publisher(),handle=handler(db,pub);
   const blocked=await call(handle,'updates.publish',{id:p.id,digest:p.digest,role:'manager',owner:true,user:users.manager});
   assert.equal(blocked.status,403);assert.equal(blocked.body.error.code,'FORBIDDEN');
-  const submitted=await call(handle,'updates.submit',bundle({authorId:'manager',authorName:'Owner',authorIds:[],status:'published',version:91,github:{head:HEAD},checks:{state:'success'},reviews:p.reviews,role:'manager'}));
+  const forged=bundle({authorId:'manager',authorName:'Owner',authorIds:[],status:'published',version:91,github:{head:HEAD},checks:{state:'success'},reviews:p.reviews,role:'manager'});
+  const submitted=await call(handle,'updates.submit',forged);
   assert.equal(submitted.status,200);
-  const created=db.read().find(item=>item.id!==p.id);
+  const created=db.read().find(item=>item.id===forged.id);
   assert.equal(created.authorId,'atlas');assert.equal(created.authorName,'Atlas');assert.deepEqual(created.authorIds,['atlas']);assert.equal(created.status,'draft');assert.equal(created.version,1);assert.deepEqual(created.reviews,[]);assert.equal(created.github,undefined);assert.equal(created.checks,undefined);
-  assert.equal(pub.calls.length,0);
+  assert.equal(pub.calls.filter(([kind])=>kind==='publish').length,0);
 });
 
 test('author cannot review and two distinct exact-version approvals are required at publish',async()=>{
@@ -103,9 +108,10 @@ test('revision during a slow provider check cannot publish an already reviewed v
   const waiting=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
   const pub=publisher({check:async()=>{entered();await gate;return {state:'success',head:HEAD,base:BASE};}}),handle=handler(db,pub);
   const publishing=call(handle,'updates.publish',{id:p.id,digest:p.digest},'manager');await waiting;
-  const revised=await call(handle,'updates.submit',bundle({id:p.id,expectedVersion:1,expectedDigest:p.digest,title:'Changed after review'}));
+  const source=fixtureSources.get(p.id);
+  const revised=await call(handle,'updates.submit',bundle({id:source.id,expectedVersion:1,expectedDigest:source.digest,title:'Changed after review'}));
   assert.equal(revised.status,200);release();
-  assert.equal((await publishing).status,409);assert.equal(pub.calls.length,0);assert.equal(db.read()[0].version,2);assert.deepEqual(db.read()[0].reviews,[]);
+  assert.equal((await publishing).status,409);assert.equal(pub.calls.filter(([kind])=>kind==='publish').length,0);const current=db.read().find(x=>x.id===p.id);assert.equal(current.version,2);assert.deepEqual(current.reviews,[]);
 });
 
 test('submission retry after a lost acknowledgement creates exactly one proposal and preserves reviews',async()=>{
@@ -114,12 +120,12 @@ test('submission retry after a lost acknowledgement creates exactly one proposal
   const first=db.read()[0];assert.equal(first.id,data.id);
   assert.equal((await call(handle,'updates.review',{id:first.id,digest:first.digest,decision:'approve'},'bob')).status,200);
   const retry=await call(handle,'updates.submit',data);
-  assert.equal(retry.status,200);assert.equal(db.read().length,1);assert.equal(db.read()[0].id,data.id);assert.equal(db.read()[0].version,1);assert.equal(db.read()[0].reviews.length,1);
+  assert.equal(retry.status,200);const sources=db.read().filter(x=>x.kind!=='release');assert.equal(sources.length,1);assert.equal(sources[0].id,data.id);assert.equal(sources[0].version,1);assert.equal(sources[0].reviews.length,1);
 });
 
 test('two concurrent publish requests acquire only one global publication lock',async()=>{
-  const first=await proposal(),second=await proposal({github:{head:OTHER,branch:'relay-update/other',pr:2}}),db=database([first,second]),pub=publisher();
-  const handle=handler(db,pub),responses=await Promise.all([first,second].map(p=>call(handle,'updates.publish',{id:p.id,digest:p.digest},'manager')));
+  const first=await proposal(),db=database([first]),pub=publisher();
+  const handle=handler(db,pub),responses=await Promise.all([first,first].map(p=>call(handle,'updates.publish',{id:p.id,digest:p.digest},'manager')));
   assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);assert.equal(pub.calls.filter(([kind])=>kind==='publish').length,1);assert.equal(db.read().filter(p=>p.status==='publishing').length,1);
 });
 
@@ -299,4 +305,77 @@ test('settings freeze during publication and an updated policy is rechecked befo
   const locked=database([{...p,status:'publishing'}]);
   assert.equal((await call(handler(locked,publisher()),'updates.settings',{policy:{mode:'one',allowSelfApproval:true}},'manager')).status,409);
   assert.equal(locked.writes(),0);
+});
+
+test('every submitted change automatically feeds one shared update and retries preserve its reviews',async()=>{
+  const db=database([],{policy:{mode:'one',allowSelfApproval:false}}),pub=publisher(),h=handler(db,pub);
+  const a=bundle({files:[{path:'a.css',content:'.a{}'}]});
+  let r=await call(h,'updates.submit',a);assert.equal(r.status,200);
+  const first=r.body.proposals.find(p=>p.kind==='release');assert.equal(first.sources.length,1);assert.equal(first.status,'staged');assert.equal(pub.calls.length,1);
+  await call(h,'updates.review',{id:first.id,digest:first.digest,decision:'approve'},'steve');
+  r=await call(h,'updates.prepare',{},'bob');const retry=r.body.proposals.find(p=>p.kind==='release');
+  assert.equal(retry.digest,first.digest);assert.equal(retry.version,1);assert.equal(retry.reviews.length,1);assert.equal(pub.calls.length,1);
+  const b=bundle({files:[{path:'b.css',content:'.b{}'}]});r=await call(h,'updates.submit',b,'bob');
+  const next=r.body.proposals.find(p=>p.kind==='release');
+  assert.equal(next.id,first.id);assert.equal(next.version,2);assert.equal(next.sources.length,2);assert.deepEqual(next.files.map(f=>f.path),['a.css','b.css']);assert.deepEqual(next.reviews,[]);assert.equal(next.checks.state,'pending');
+  assert.equal(db.read().filter(p=>p.kind==='release').length,1);assert.equal(pub.calls.filter(([kind])=>kind==='publish').length,0);
+});
+
+test('overlapping edits stay on the bulletin board and become red until the conflict is corrected',async()=>{
+  const db=database(),pub=publisher(),h=handler(db,pub),a=bundle(),b=bundle({files:[{path:'inbox.css',content:'.different{}'}]});
+  await call(h,'updates.submit',a);
+  let r=await call(h,'updates.submit',b,'bob');assert.equal(r.status,200);assert.equal(r.body.preparationError.code,'FILE_CONFLICT');assert.equal(r.body.assembly.state,'failure');
+  assert.equal(db.read().filter(p=>p.kind!=='release').length,2);assert.equal(pub.calls.length,1);
+  const current=r.body.proposals.find(p=>p.id===b.id);
+  r=await call(h,'updates.submit',{...b,files:a.files,expectedVersion:current.version,expectedDigest:current.digest},'bob');
+  assert.equal(r.status,200);assert.equal(r.body.preparationError,undefined);const release=r.body.proposals.find(p=>p.kind==='release');assert.equal(release.sources.length,2);assert.equal(release.files.length,1);
+  r=await call(h,'updates.refresh',{id:release.id});assert.equal(r.body.assembly.state,'success');assert.equal(r.body.proposals.find(p=>p.id===release.id).readiness.ready,false);
+});
+
+test('shared preparation cannot choose a subset, and an individual contribution cannot be published',async()=>{
+  const db=database(),pub=publisher(),h=handler(db,pub),a=bundle();await call(h,'updates.submit',a);
+  assert.equal((await call(h,'updates.prepare',{selected:[{id:a.id}]},'manager')).status,400);
+  const source=db.read().find(p=>p.id===a.id);
+  const denied=await call(h,'updates.publish',{id:source.id,digest:source.digest,managerOverride:true},'manager');
+  assert.equal(denied.status,409);assert.equal(denied.body.error.code,'SHARED_UPDATE_REQUIRED');assert.equal(pub.calls.filter(([kind])=>kind==='publish').length,0);
+});
+
+test('a new post during the final check prevents the old shared update from publishing even with override',async()=>{
+  const db=database(),pub=publisher(),h=handler(db,pub);
+  let r=await call(h,'updates.submit',bundle({files:[{path:'a.css',content:'.a{}'}]}));const p=r.body.proposals.find(p=>p.kind==='release');
+  let entered,done;const checking=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>done=resolve);
+  pub.check=async q=>{entered();await gate;return {state:'success',head:q.github.head,base:q.base};};
+  const publishing=call(h,'updates.publish',{id:p.id,digest:p.digest,managerOverride:true},'manager');await checking;
+  assert.equal((await call(h,'updates.submit',bundle({files:[{path:'b.css',content:'.b{}'}]}),'bob')).status,200);done();
+  assert.equal((await publishing).status,409);assert.equal(pub.calls.filter(([kind])=>kind==='publish').length,0);
+});
+
+test('included sources are frozen during publish and all share the resulting commit and deployment',async()=>{
+  let main=BASE,entered,done;const publishingStarted=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>done=resolve);
+  const db=database(),pub=publisher({repository:async()=>({main,connected:true}),publish:async p=>{entered();await gate;main=p.github.head;return {sha:main};}}),h=handler(db,pub);
+  const a=bundle({files:[{path:'a.css',content:'.a{}'}]}),b=bundle({files:[{path:'b.css',content:'.b{}'}]});
+  await call(h,'updates.submit',a);let r=await call(h,'updates.submit',b,'bob');const release=r.body.proposals.find(p=>p.kind==='release'),source=r.body.proposals.find(p=>p.id===a.id);
+  const pushing=call(h,'updates.publish',{id:release.id,digest:release.digest,managerOverride:true},'manager');await publishingStarted;
+  assert.equal((await call(h,'updates.submit',{...a,title:'Changed during publish',expectedVersion:source.version,expectedDigest:source.digest})).status,409);
+  assert.equal((await call(h,'updates.withdraw',{id:source.id,digest:source.digest})).status,409);
+  done();assert.equal((await pushing).status,200);
+  for(const p of db.read().filter(p=>p.kind!=='release')){assert.equal(p.status,'published');assert.equal(p.releaseId,release.id);assert.equal(p.publishedCommit,HEAD);assert.equal(p.publishedBy,'manager');assert.equal(p.managerOverride,true);assert.equal(p.deployment.state,'pending');}
+  r=await call(h,'updates.refresh',{id:a.id});assert.equal(r.status,200);
+  for(const p of db.read())assert.equal(p.deployment.state,'success');
+  assert.equal(r.body.assembly.state,'empty');
+});
+
+test('lost publication acknowledgement reconciles the whole update and propagates Pages failure',async()=>{
+  let main=BASE;const db=database(),pub=publisher({repository:async()=>({main,connected:true}),publish:async p=>{main=p.github.head;throw error('NETWORK','Lost response',503);},deployment:async()=>({state:'failure',summary:'Pages failed.'})}),h=handler(db,pub);
+  const a=bundle({files:[{path:'a.css',content:'.a{}'}]}),b=bundle({files:[{path:'b.css',content:'.b{}'}]});await call(h,'updates.submit',a);const r=await call(h,'updates.submit',b,'bob'),release=r.body.proposals.find(p=>p.kind==='release');
+  assert.equal((await call(h,'updates.publish',{id:release.id,digest:release.digest,managerOverride:true},'manager')).status,503);
+  assert.equal(db.read().find(p=>p.id===a.id).status,'draft');
+  const recovered=await call(h,'updates.refresh',{id:a.id});assert.equal(recovered.status,200);assert.equal(recovered.body.assembly.state,'failure');
+  for(const p of db.read()){assert.equal(p.status,'published');assert.equal(p.deployment.state,'failure');}
+  assert.equal(db.read().find(p=>p.id===a.id).releaseId,release.id);
+});
+
+test('withdrawing the last pending change makes the shared update empty and yellow',async()=>{
+  const db=database(),h=handler(db,publisher()),a=bundle();let r=await call(h,'updates.submit',a);const source=r.body.proposals.find(p=>p.id===a.id);
+  r=await call(h,'updates.withdraw',{id:a.id,digest:source.digest});assert.equal(r.status,200);assert.equal(r.body.assembly.state,'empty');assert.equal(db.read().filter(p=>!['published','withdrawn'].includes(p.status)).length,0);
 });
