@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateBundle,createProposal,reviseProposal,reviewProposal,readiness,publicProposal,UpdatePolicyError} from '../updates-policy.mjs';
+import {validateBundle,createProposal,reviseProposal,reviewProposal,readiness,publicProposal,UpdatePolicyError,approvalPolicy,mayReview} from '../updates-policy.mjs';
 
 const BASE='a'.repeat(40),HEAD='b'.repeat(40),OTHER='c'.repeat(40),AT='2026-10-02T23:00:00Z';
 const author={id:'atlas',name:'Atlas',role:'worker'};
@@ -11,7 +11,7 @@ const bundle=(extra={})=>({id:crypto.randomUUID(),title:'Improve the inbox',desc
 const proposal=()=>createProposal(bundle(),author,AT);
 const approve=(old,user=bob)=>reviewProposal(old,{digest:old.digest,decision:'approve',body:'Checked the proposed files.'},user,AT);
 const staged=old=>({...old,status:'staged',github:{branch:'updates/test',head:HEAD,pr:1,url:'https://github.com/owner/repo/pull/1'},checks:{state:'success',head:HEAD,base:BASE,summary:'Checks passed.'}});
-const context=extra=>({connected:true,main:BASE,proposals:[],...extra});
+const context=extra=>({connected:true,main:BASE,proposals:[],activeAccounts:[author,bob,steve,manager],policy:{mode:'agents',allowSelfApproval:false},...extra});
 const throwsCode=(fn,code)=>assert.throws(fn,error=>error instanceof UpdatePolicyError&&error.code===code);
 const rejectsCode=(fn,code)=>assert.rejects(fn,error=>error instanceof UpdatePolicyError&&error.code===code);
 
@@ -77,7 +77,7 @@ test('revision is version-checked, preserves all editors as authors, and invalid
   assert.equal(revised.version,2);assert.equal(revised.authorId,'atlas');assert.deepEqual(revised.authorIds,['atlas','manager']);assert.notEqual(revised.digest,original.digest);assert.equal(revised.id,original.id);assert.equal(revised.status,'draft');assert.deepEqual(revised.reviews,[]);assert.equal(revised.github,undefined);assert.equal(revised.checks,undefined);
   assert.equal(original.version,1);assert.equal(original.reviews.length,1);
   const again=await reviseProposal(revised,{...bundle(),expectedVersion:2},author,AT);
-  assert.deepEqual(again.authorIds,['atlas','manager']);throwsCode(()=>approve(again,manager),'SELF_REVIEW');
+  assert.deepEqual(again.authorIds,['atlas','manager']);assert.equal(approve(again,manager).reviews[0].reviewerId,'manager');
   await rejectsCode(()=>reviseProposal(revised,{...bundle(),expectedVersion:1},author,AT),'VERSION_CONFLICT');
   await rejectsCode(()=>reviseProposal(revised,{...bundle(),expectedVersion:2,expectedDigest:original.digest},author,AT),'VERSION_CONFLICT');
   await rejectsCode(()=>reviseProposal(revised,bundle(),author,AT),'VERSION_CONFLICT');
@@ -86,7 +86,7 @@ test('revision is version-checked, preserves all editors as authors, and invalid
 
 test('reviews require exact current digest and cannot be supplied by any author or editor',async()=>{
   const old=await proposal();
-  throwsCode(()=>approve(old,author),'SELF_REVIEW');
+  throwsCode(()=>approve(old,author),'REVIEW_FORBIDDEN');
   for(const digest of [undefined,'0'.repeat(64),'not-a-digest'])throwsCode(()=>reviewProposal(old,{digest,decision:'approve'},bob,AT),'VERSION_CONFLICT');
   throwsCode(()=>reviewProposal(old,{digest:old.digest,decision:'unknown'},bob,AT),'INVALID_REVIEW');
   throwsCode(()=>reviewProposal(old,{digest:old.digest,decision:'changes',body:''},bob,AT),'INVALID_UPDATE');
@@ -102,7 +102,7 @@ test('one reviewer only counts once and can resolve their own change request',as
 });
 
 test('readiness requires two distinct independent approvals and exact checks against the staged head and base',async()=>{
-  const p=staged(approve(approve(await proposal(),bob),manager));
+  const p=staged(approve(approve(await proposal(),bob),steve));
   assert.deepEqual({state:readiness(p,context()).state,ready:readiness(p,context()).ready,count:readiness(p,context()).approvalCount},{state:'ready',ready:true,count:2});
   const cases=[
     [p,context({connected:false}),'NOT_CONNECTED'],
@@ -160,4 +160,39 @@ test('public projection does not leak server fields or alias mutable records',as
   assert.equal(visible.privateToken,undefined);assert.equal(visible.github.token,undefined);assert.equal(visible.checks.internalLog,undefined);assert.equal(visible.reviews[0].internal,undefined);assert.equal(visible.readiness.state,'reviewing');
   assert.equal(visible.deployment.internal,undefined);assert.equal(visible.deployment.state,'pending');assert.equal(visible.publishStartedAt,AT);assert.equal(visible.publishError,'Pages pending');
   visible.files[0].content='mutated';visible.authorIds.push('someone');visible.reviews[0].body='changed';assert.notEqual(p.files[0].content,'mutated');assert.equal(p.authorIds.length,1);assert.notEqual(p.reviews[0].body,'changed');
+});
+
+
+test('default is one sign-off, manager mode excludes workers and agent mode requires two distinct workers',async()=>{
+  const p=staged(await proposal()),accounts=[author,bob,steve,manager];
+  const ctx=policy=>({connected:true,main:BASE,activeAccounts:accounts,policy});
+  assert.equal(readiness(approve(p,bob),ctx({mode:'one',allowSelfApproval:false})).ready,true);
+  assert.equal(readiness(approve(p,bob),ctx({mode:'manager',allowSelfApproval:false})).ready,false);
+  assert.equal(readiness(approve(p,manager),ctx({mode:'manager',allowSelfApproval:false})).ready,true);
+  assert.equal(readiness(approve(approve(p,bob),manager),ctx({mode:'agents',allowSelfApproval:false})).approvalCount,1);
+  assert.equal(readiness(approve(approve(p,bob),steve),ctx({mode:'agents',allowSelfApproval:false})).ready,true);
+  assert.equal(readiness(approve(p,bob),{connected:true,main:BASE}).requiredApprovals,1);
+  for(const bad of [null,{},[],{mode:'bogus',allowSelfApproval:false},{mode:'one',allowSelfApproval:'true'}])throwsCode(()=>approvalPolicy(bad),'INVALID_POLICY');
+});
+
+test('worker self-sign-off is opt-in, exact-version and distinct; manager can approve its own',async()=>{
+  const p=staged(await proposal()),policy={mode:'agents',allowSelfApproval:true};
+  const self=reviewProposal(p,{digest:p.digest,decision:'approve'},author,AT,policy);
+  assert.equal(mayReview(p,author,policy),true);assert.equal(mayReview(p,author,{...policy,allowSelfApproval:false}),false);
+  const ctx={connected:true,main:BASE,activeAccounts:[author,bob,manager],policy};
+  assert.equal(readiness(self,ctx).approvalCount,1);assert.equal(readiness(self,ctx).ready,false);
+  assert.equal(readiness(reviewProposal(self,{digest:p.digest,decision:'approve'},author,AT,policy),ctx).approvalCount,1);
+  assert.equal(readiness(approve(self,bob),ctx).ready,true);
+  assert.equal(readiness(approve(self,bob),{...ctx,policy:{...policy,allowSelfApproval:false}}).ready,false);
+  assert.equal(readiness({...self,reviews:[{...self.reviews[0],digest:'f'.repeat(64)}]},ctx).approvalCount,0);
+  assert.equal(mayReview({...p,authorId:manager.id,authorIds:[manager.id]},manager,{mode:'manager',allowSelfApproval:false}),true);
+});
+
+test('manager override bypasses review count and objections but retains every technical gate',async()=>{
+  const p=staged(await proposal()),ctx={connected:true,main:BASE,managerOverride:true};
+  assert.equal(readiness(p,ctx).ready,true);
+  const objection=reviewProposal(p,{digest:p.digest,decision:'changes',body:'Please change this.'},bob,AT);
+  assert.equal(readiness(objection,ctx).ready,true);
+  for(const bad of [{...p,base:OTHER},{...p,checks:{state:'failure'}},{...p,checks:{state:'pending'}},{...p,status:'draft'}])assert.equal(readiness(bad,ctx).ready,false);
+  assert.equal(readiness(p,{...ctx,proposals:[{...p,id:'other',status:'publishing'}]}).ready,false);
 });

@@ -18,7 +18,7 @@ async function proposal({approved=true,staged=true,...extra}={}){
 }
 
 // A compare-and-swap contract fixture. Real SQL ACLs require a database test.
-function database(proposals=[],{loseFirstAcknowledgement=false}={}){
+function database(proposals=[],{loseFirstAcknowledgement=false,policy={mode:'agents',allowSelfApproval:false}}={}){
   let records=structuredClone(proposals),revision=0,writes=0;
   const calls=[];
   const rpc=async(action,token,data={})=>{
@@ -26,10 +26,10 @@ function database(proposals=[],{loseFirstAcknowledgement=false}={}){
     if(!users[token])throw error('SESSION','Session invalid',401);
     if(action==='updates.commit'){
       if(data.expectedRevision!==revision)throw error('CONFLICT');
-      records=structuredClone(data.proposals);revision++;writes++;
+      records=structuredClone(data.proposals);if(data.policy)policy=structuredClone(data.policy);revision++;writes++;
       if(loseFirstAcknowledgement&&writes===1)throw error('NETWORK','Saved, but response lost',503);
     }else assert.equal(action,'updates.load');
-    return {user:structuredClone(users[token]),proposals:structuredClone(records),revision,activeAccountIds:Object.keys(users)};
+    return {user:structuredClone(users[token]),proposals:structuredClone(records),revision,policy:structuredClone(policy),activeAccounts:Object.values(users),activeAccountIds:Object.keys(users)};
   };
   return {rpc,calls,read:()=>structuredClone(records),writes:()=>writes};
 }
@@ -247,4 +247,56 @@ test('GitHub installation token is restricted to this repository and is never re
   assert.equal(auth.options.redirect,'error');assert.ok(auth.options.signal instanceof AbortSignal);
   assert.deepEqual(result,{name:REPOSITORY,main:BASE,connected:true});
   assert.ok(!JSON.stringify(result).includes('synthetic-installation-token'));
+});
+
+
+test('only manager changes policy; one sign-off, manager-only and self-sign-off are enforced',async()=>{
+  const p=await proposal({approved:false}),db=database([p],{policy:{mode:'one',allowSelfApproval:false}}),pub=publisher(),h=handler(db,pub);
+  assert.equal((await call(h,'updates.settings',{policy:{mode:'one',allowSelfApproval:true}})).status,403);
+  assert.equal((await call(h,'updates.settings',{},'manager')).status,400);
+  assert.equal((await call(h,'updates.review',{id:p.id,digest:p.digest,decision:'approve'},'bob')).status,200);
+  assert.equal((await call(h,'updates.list')).body.proposals[0].readiness.ready,true);
+  assert.equal((await call(h,'updates.settings',{policy:{mode:'manager',allowSelfApproval:false}},'manager')).status,200);
+  assert.equal((await call(h,'updates.list')).body.proposals[0].readiness.ready,false);
+  assert.equal((await call(h,'updates.review',{id:p.id,digest:p.digest,decision:'approve'},'steve')).status,403);
+  assert.equal((await call(h,'updates.review',{id:p.id,digest:p.digest,decision:'approve'},'manager')).status,200);
+  assert.equal((await call(h,'updates.list')).body.proposals[0].readiness.ready,true);
+  assert.equal((await call(h,'updates.settings',{policy:{mode:'agents',allowSelfApproval:true}},'manager')).status,200);
+  assert.equal((await call(h,'updates.review',{id:p.id,digest:p.digest,decision:'approve'},'atlas')).status,200);
+  assert.equal((await call(h,'updates.list')).body.proposals[0].readiness.approvalCount,2);
+});
+
+test('explicit manager override publishes without reviews, is audited, and workers cannot invoke it',async()=>{
+  const p=await proposal({approved:false}),db=database([p]),pub=publisher(),h=handler(db,pub);
+  assert.equal((await call(h,'updates.publish',{id:p.id,digest:p.digest,managerOverride:true})).status,403);
+  assert.equal((await call(h,'updates.publish',{id:p.id,digest:p.digest,managerOverride:true},'manager')).status,200);
+  assert.equal(db.read()[0].managerOverride,true);assert.equal(db.read()[0].publishedBy,'manager');
+  const q=await proposal({approved:false}),db2=database([q]),h2=handler(db2,publisher({check:async()=>({state:'failure',head:HEAD,base:BASE})}));
+  assert.equal((await call(h2,'updates.publish',{id:q.id,digest:q.digest,managerOverride:true},'manager')).status,409);
+  assert.equal(db2.writes(),0);
+});
+
+test('disabling the sole reviewer between load and commit forces a fresh eligibility check',async()=>{
+  let p=await proposal({approved:false});p=reviewProposal(p,{digest:p.digest,decision:'approve'},users.bob,new Date(AT).toISOString());
+  const db=database([p],{policy:{mode:'one',allowSelfApproval:false}}),pub=publisher();let contextRevision=1,disabled=false;
+  const rpc=async(action,token,data)=>{
+    if(action==='updates.commit'){
+      if(!disabled){disabled=true;contextRevision++;}
+      if(data.expectedContextRevision!==contextRevision)throw error('CONFLICT');
+    }
+    const state=await db.rpc(action,token,data);
+    return {...state,contextRevision,activeAccounts:Object.values(users).filter(u=>!disabled||u.id!=='bob'),activeAccountIds:Object.keys(users).filter(id=>!disabled||id!=='bob')};
+  };
+  const h=createUpdatesHandler({rpc,publisher:pub,now:()=>AT});
+  const r=await call(h,'updates.publish',{id:p.id,digest:p.digest},'manager');
+  assert.equal(r.status,409);assert.equal(r.body.error.code,'NOT_READY');assert.equal(db.writes(),0);assert.equal(pub.calls.length,0);
+});
+
+test('settings freeze during publication and an updated policy is rechecked before publish',async()=>{
+  const p=await proposal({approved:false}),db=database([p]),pub=publisher(),h=handler(db,pub);
+  pub.check=async q=>{await call(h,'updates.settings',{policy:{mode:'manager',allowSelfApproval:false}},'manager');return {state:'success',head:q.github.head,base:q.base};};
+  assert.equal((await call(h,'updates.publish',{id:p.id,digest:p.digest},'manager')).body.error.code,'NOT_READY');
+  const locked=database([{...p,status:'publishing'}]);
+  assert.equal((await call(handler(locked,publisher()),'updates.settings',{policy:{mode:'one',allowSelfApproval:true}},'manager')).status,409);
+  assert.equal(locked.writes(),0);
 });

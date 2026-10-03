@@ -19,6 +19,7 @@ run(['createdb',db]);
 try{
   sql(readFileSync(new URL('../backend/schema.sql',import.meta.url),'utf8'));
   sql(readFileSync(new URL('../backend/updates.sql',import.meta.url),'utf8'));
+  sql(readFileSync(new URL('../backend/updates-approval-settings.sql',import.meta.url),'utf8'));
   // A fake decrypted view tests our bridge permissions, not Vault encryption.
   sql("create schema vault; create table vault.decrypted_secrets(name text,decrypted_secret text); insert into vault.decrypted_secrets values('relay_update_publisher','{\"appId\":\"123\"}'),('unrelated','{\"private\":true}');");
   sql(readFileSync(new URL('../backend/updates-vault.sql',import.meta.url),'utf8'));
@@ -51,6 +52,18 @@ try{
     assert.equal(updates('updates.commit',login.token,{expectedRevision:0,proposals:[]}).error.code,'CONFLICT');
     assert.equal(updates('updates.commit',login.token,{expectedRevision:1,proposals:{}}).error.code,'CAPACITY');
     assert.equal(good(updates('updates.load',manager.token)).proposals.length,1);
+  });
+  await check('approval settings are manager-only, persist across worker commits, and guard account races',()=>{
+    let state=good(updates('updates.load',manager.token));
+    assert.deepEqual(state.policy,{mode:'one',allowSelfApproval:false});
+    const policy={mode:'agents',allowSelfApproval:true};
+    const payload={expectedRevision:state.revision,expectedContextRevision:state.contextRevision,proposals:state.proposals,policy};
+    assert.equal(updates('updates.commit',login.token,payload).error.code,'FORBIDDEN');
+    state=good(updates('updates.commit',manager.token,payload));assert.deepEqual(state.policy,policy);
+    state=good(updates('updates.commit',login.token,{expectedRevision:state.revision,proposals:state.proposals}));assert.deepEqual(state.policy,policy);
+    const before=state.contextRevision;
+    good(rpc('workers.update',manager.token,{workerId:worker.id,name:'Test worker',workRole:'Builder',enabled:true}));
+    assert.equal(updates('updates.commit',manager.token,{expectedRevision:state.revision,expectedContextRevision:before,proposals:state.proposals}).error.code,'CONFLICT');
   });
   await check('disabled worker session immediately loses update access',()=>{
     good(rpc('workers.update',manager.token,{workerId:worker.id,name:'Test worker',workRole:'Builder',enabled:false}));
