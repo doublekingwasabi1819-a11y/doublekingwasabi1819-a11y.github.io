@@ -2,7 +2,8 @@
 export function createSidebar({names,icon,escape:h}) {
   const groups=[
     {id:'overview',label:'Overview',icon:'overview',routes:['team','messages','inbox','needs']},
-    {id:'projects',label:'Projects',icon:'builds',routes:['memory','builds','connect']}
+    {id:'projects',label:'Projects',icon:'builds',routes:['memory','builds','connect']},
+    {id:'utilize',label:'Utilize',icon:'connect',routes:['software','hardware']}
   ];
   const expanded=new Map(groups.map(group=>[group.id,false]));
   let previousView;
@@ -33,7 +34,7 @@ export function createSidebar({names,icon,escape:h}) {
           : `<button type="button" class="nav-item nav-group-toggle ${active?'active':''}" ${attributes}>${icon(group.icon)}<span class="nav-link-label">${group.label}</span>${chevron}</button>`;
         return `<div class="nav-group">${heading}<div id="nav-group-${group.id}" class="nav-group-links"${open?'':' hidden'}>${group.routes.map(link).join('')}</div></div>`;
       };
-      return `<div class="nav-label">WORKSPACE</div>${hasRoom?link('room'):''}${groupMarkup(groups[0])}${link('tasks')}${groupMarkup(groups[1])}${link('software')}${link('updates')}`;
+      return `<div class="nav-label">WORKSPACE</div>${hasRoom?link('room'):''}${groupMarkup(groups[0])}${link('tasks')}${groupMarkup(groups[1])}${groupMarkup(groups[2])}${link('updates')}`;
     }
   };
 }
