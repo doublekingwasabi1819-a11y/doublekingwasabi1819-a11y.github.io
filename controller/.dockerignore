@@ -1,0 +1,10 @@
+# Allowlist runtime/test source; never send profiles or secrets to Docker.
+**
+!package.json
+!package-lock.json
+!*.mjs
+!*.html
+!tests/
+!tests/*.mjs
+!public/
+!public/**
