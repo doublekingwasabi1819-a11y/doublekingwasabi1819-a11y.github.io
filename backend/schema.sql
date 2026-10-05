@@ -126,6 +126,43 @@ returns jsonb language sql volatile security invoker set search_path = pg_catalo
 as $$ select jsonb_set(jsonb_set(p_state, '{revision}', to_jsonb(p_revision)),
   '{updatedAt}', to_jsonb(clock_timestamp())); $$;
 
+-- Account lifecycle changes must update every assignment, not only the legacy
+-- primary-owner mirror. A null run removes the worker; a non-null run renews
+-- that worker's unfinished assignments. Completed attribution snapshots and
+-- soft-deletion/task-history fields survive.
+create or replace function relay_private.update_task_worker(
+  p_task jsonb, p_agent_id text, p_run_id text, p_now timestamptz
+)
+returns jsonb language plpgsql stable security invoker set search_path = pg_catalog
+as $$
+declare v_assignees jsonb; v_task jsonb;
+begin
+  if p_task->>'status' = 'done' then return p_task; end if;
+  v_assignees := case when jsonb_typeof(p_task->'assignees') = 'array'
+    then p_task->'assignees'
+    when nullif(p_task->>'owner', '') is not null then
+      jsonb_build_array(jsonb_build_object('agentId', p_task->>'owner', 'session', p_task->'session'))
+    else '[]'::jsonb end;
+  if not exists (select 1 from jsonb_array_elements(v_assignees) a
+      where a->>'agentId' = p_agent_id) then
+    return p_task;
+  end if;
+  select coalesce(jsonb_agg(case when item->>'agentId' = p_agent_id
+      then item || jsonb_build_object('session', p_run_id) else item end order by ord), '[]'::jsonb)
+    into v_assignees
+    from jsonb_array_elements(v_assignees) with ordinality as a(item, ord)
+    where p_run_id is not null or item->>'agentId' is distinct from p_agent_id;
+  v_task := p_task || jsonb_build_object('assignees', v_assignees,
+    'owner', v_assignees->0->>'agentId', 'session', v_assignees->0->'session',
+    'version', coalesce((p_task->>'version')::bigint, 0) + 1, 'updatedAt', p_now);
+  if p_run_id is null and jsonb_array_length(v_assignees) = 0
+      and p_task->>'status' is distinct from 'done' then
+    v_task := v_task || jsonb_build_object('status', 'ready');
+  end if;
+  return v_task;
+end;
+$$;
+
 -- Direct messages never enter the shared studio JSON or activity log.
 create table if not exists relay_private.direct_messages (
   id uuid primary key default gen_random_uuid(),
@@ -493,7 +530,10 @@ begin
       'state', v_studio.state,
       'room', jsonb_build_object('accountId', v_user.id, 'body', coalesce(v_room.body, ''),
         'version', coalesce(v_room.version, 0), 'updatedAt', v_room.updated_at),
-      'workers', v_workers);
+      'workers', v_workers,
+      'manager', (select jsonb_build_object('name', a.name)
+        from relay_private.accounts a where a.role = 'manager'),
+      'capabilities', jsonb_build_object('taskLifecycleV1', true));
   end if;
 
   if p_action in ('room.read', 'room.save') then
@@ -673,16 +713,16 @@ begin
         item || jsonb_build_object('session', v_run_id, 'lastSeen', null)
         else item end order by ord), '[]'::jsonb) into v_agents
       from jsonb_array_elements(v_studio.state->'agents') with ordinality as a(item, ord);
-      select coalesce(jsonb_agg(case when item->>'owner' = v_agent_id::text and item->>'status' <> 'done' then
-        item || jsonb_build_object('session', v_run_id)
-        else item end order by ord), '[]'::jsonb) into v_tasks
+      select coalesce(jsonb_agg(relay_private.update_task_worker(
+        item, v_agent_id::text, v_run_id, v_now) order by ord), '[]'::jsonb) into v_tasks
       from jsonb_array_elements(v_studio.state->'tasks') with ordinality as t(item, ord);
       v_state := jsonb_set(jsonb_set(v_studio.state, '{agents}', v_agents), '{tasks}', v_tasks);
     else
       if p_data->>'confirmation' is distinct from v_target.username then
         return relay_private.error('CONFIRMATION', 'Type the worker login to delete this slot.', 400);
       end if;
-      -- Shared posts/tasks remain attributed to a disabled anonymous tombstone.
+      -- Shared posts/history remain attributed to a disabled anonymous tombstone.
+      -- Remove this worker's assignments while preserving other workers' runs.
       -- The private account, room, password, and all sessions are removed.
       select coalesce(jsonb_agg(case when item->>'id' = v_agent_id::text then
         item || jsonb_build_object('name', 'Deleted worker', 'role', 'Removed', 'model', '',
@@ -690,9 +730,8 @@ begin
           'lastSeen', null, 'lastProgress', null, 'deleted', true)
         else item end order by ord), '[]'::jsonb) into v_agents
       from jsonb_array_elements(v_studio.state->'agents') with ordinality as a(item, ord);
-      select coalesce(jsonb_agg(case when item->>'owner' = v_agent_id::text and item->>'status' <> 'done' then
-        item || jsonb_build_object('owner', null, 'session', null, 'status', 'ready', 'updatedAt', v_now)
-        else item end order by ord), '[]'::jsonb) into v_tasks
+      select coalesce(jsonb_agg(relay_private.update_task_worker(
+        item, v_agent_id::text, null, v_now) order by ord), '[]'::jsonb) into v_tasks
       from jsonb_array_elements(v_studio.state->'tasks') with ordinality as t(item, ord);
       v_state := jsonb_set(jsonb_set(v_studio.state, '{agents}', v_agents), '{tasks}', v_tasks);
       delete from relay_private.accounts where id = v_target.id;
