@@ -37,6 +37,11 @@ function database({loseAcknowledgement=false}={}) {
     const session=sessions[token];
     if(!session)fail('Sign in again.','SESSION');
     if(action==='context')return {capabilities:{taskLifecycleV1:true},...structuredClone(session),state:structuredClone(state),room:{accountId:session.user.id,body:'Private room',version:0}};
+    if(action==='messages.composer.send'){
+      const next=applyOperation(state,data.op,session.actor);
+      if(next!==state){state=next;writes++;if(loseAcknowledgement&&writes===1)fail('Lost response.','NETWORK');}
+      return {state};
+    }
     if(action==='board.commit'){
       if(state.revision!==data.expectedRevision)fail('Someone saved first.','CONFLICT');
       state=structuredClone(data.state);writes++;
@@ -63,7 +68,7 @@ function memoryStorage(){const saved=new Map();return {getItem:key=>saved.get(ke
 
 test('protected actions reject a missing token before calling the database',async()=>{
   const db=database(),handler=createHandler({rpc:db.rpc});
-  for(const action of ['context','room.read','operation','workers.create','workspace.delete']){
+  for(const action of ['context','room.read','operation','workers.create','workspace.delete','messages.capabilities','messages.get','messages.metadata','messages.history','messages.send','messages.notifications','messages.notifications.ack']){
     const result=await response(handler,action,{},'');assert.equal(result.status,401);assert.equal(result.body.error.code,'SESSION');
   }
   assert.equal(db.calls.length,0);
@@ -158,7 +163,7 @@ test('simultaneous authenticated claims result in one owner after conflict retry
   assert.ok(['forge','scout'].includes(db.get().tasks[0].owner));
 });
 
-test('conflict retry preserves independent writes and server-derived senders',async()=>{
+test('public messages route to atomic composer RPC with server-derived senders',async()=>{
   const db=database(),handler=createHandler({rpc:db.rpc});
   const results=await Promise.all([
     response(handler,'operation',{op:{id:'message-forge',type:'message.add',payload:{body:'Forge here',from:'owner'}}},'worker-token'),
@@ -166,6 +171,8 @@ test('conflict retry preserves independent writes and server-derived senders',as
   ]);
   assert.ok(results.every(result=>result.status===200));assert.equal(db.writes(),2);
   assert.deepEqual(db.get().messages.map(message=>message.from).sort(),['forge','scout']);
+  assert.equal(db.calls.filter(c=>c.action==='messages.composer.send').length,2);
+  assert.ok(db.calls.every(c=>c.action!=='board.commit'));
 });
 
 test('lost commit acknowledgement and repeated operation IDs do not duplicate a write',async()=>{
@@ -315,4 +322,30 @@ test('a completed old-account mutation cannot fetch current-account context as i
   pending.resolve(Response.json({state:{revision:1}}));
   await assert.rejects(saved,error=>error.code==='ACCOUNT_CHANGED');
   assert.equal(requests.length,1);assert.equal(requests[0].action,'operation');assert.equal(client.token,'new-account');
+});
+
+
+test('canonical message routes use the privileged message transport and strip envelope spoofing',async()=>{
+  const sent=[];
+  const rpc=createDatabaseRPC({url:'https://database.example/',serviceKey:'synthetic-only',fetcher:async(url,options)=>{
+    sent.push({url,...JSON.parse(options.body)});return Response.json({ok:true});
+  }});
+  const handler=createHandler({rpc});
+  const routes=[
+    ['messages.capabilities',{}],['messages.get',{messageId:'message-id'}],
+    ['messages.metadata',{messageIds:['message-id']}],['messages.history',{beforeId:'message-id'}],
+    ['messages.send',{command:{clientId:'synthetic-client'}}],['messages.notifications',{limit:20}],
+    ['messages.notifications.ack',{notificationId:'notification-id'}],
+  ];
+  for(const [action,data] of routes){
+    const result=await response(handler,action,{...data,role:'manager',actor:manager,owner:true});
+    assert.equal(result.status,200);const actual=sent.at(-1);
+    assert.equal(actual.url,'https://database.example/rest/v1/rpc/relay_message_rpc');
+    assert.equal(actual.p_action,action);assert.equal(actual.p_token,'worker-token');assert.deepEqual(actual.p_data,data);
+  }
+  await response(handler,'dm.send',{recipientId:'recipient-id',body:'Reply',clientId:'client-id',replyToMessageId:'reply-id',owner:true});
+  assert.equal(sent.at(-1).url,'https://database.example/rest/v1/rpc/relay_dm_rpc');
+  assert.deepEqual(sent.at(-1).p_data,{recipientId:'recipient-id',body:'Reply',clientId:'client-id',replyToMessageId:'reply-id'});
+  const internal=await response(handler,'messages.composer.send',{op:{id:'internal',type:'message.add',payload:{body:'No'}}});
+  assert.equal(internal.status,404);
 });

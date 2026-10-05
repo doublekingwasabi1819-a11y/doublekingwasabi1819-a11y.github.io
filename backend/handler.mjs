@@ -2,7 +2,7 @@ import {emptyState,applyOperation,HubError} from '../engine.mjs';
 
 const PUBLIC_ACTIONS=new Set(['status','setup','login','recovery.reset']);
 const MANAGER_ACTIONS=new Set(['workers.create','workers.update','workers.reset','workers.delete','password.change','recovery.rotate','workspace.delete']);
-const ACTIONS=new Set([...PUBLIC_ACTIONS,...MANAGER_ACTIONS,'logout','context','room.read','room.save','operation','dm.inbox','dm.thread','dm.send','dm.read']);
+const ACTIONS=new Set([...PUBLIC_ACTIONS,...MANAGER_ACTIONS,'logout','context','room.read','room.save','operation','dm.inbox','dm.thread','dm.send','dm.read','messages.capabilities','messages.get','messages.metadata','messages.history','messages.send','messages.notifications','messages.notifications.ack']);
 const OPERATIONS=new Set(['project.update','agent.session','agent.checkpoint','task.add','task.assign','task.edit','task.delete','task.restore','task.claim','task.release','task.progress','task.review','message.add','request.add','request.resolve','memory.save','build.add']);
 const MANAGER_OPERATIONS=new Set(['project.update','agent.session','task.release','task.assign','task.edit','task.delete','task.restore','request.resolve','memory.save']);
 const STATUS={UNAUTHORIZED:401,SESSION:401,STALE_SESSION:401,FORBIDDEN:403,NOT_FOUND:404,CONFLICT:409,CLAIMED:409,TASK_DELETED:409,DELETED:410,RATE_LIMIT:429,NETWORK:503};
@@ -17,7 +17,9 @@ const allowedFields={
   'workspace.delete':['currentPassword','confirmation'],'room.read':['accountId'],
   'room.save':['body','expectedVersion','accountId'],operation:['op'],
   'dm.inbox':[], 'dm.thread':['participantA','participantB','beforeId'],
-  'dm.send':['recipientId','body','clientId'], 'dm.read':['messageIds']
+  'dm.send':['recipientId','body','clientId','replyToMessageId'], 'dm.read':['messageIds'],
+  'messages.capabilities':[], 'messages.get':['messageId'], 'messages.metadata':['messageIds'], 'messages.history':['beforeId'], 'messages.send':['command'],
+  'messages.notifications':['limit'], 'messages.notifications.ack':['notificationId']
 };
 const pick=(action,data)=>Object.fromEntries(allowedFields[action].filter(k=>Object.hasOwn(data,k)).map(k=>[k,data[k]]));
 const error=(message,code='VALIDATION',status=400)=>Object.assign(new HubError(message,code),{status});
@@ -28,7 +30,7 @@ export function createDatabaseRPC({url,serviceKey,fetcher=fetch}){
   if(!url||!serviceKey)throw new Error('Backend database configuration is missing.');
   return async(action,token,data={})=>{
     let response;
-    try{response=await fetcher(url.replace(/\/$/,'')+'/rest/v1/rpc/'+(action.startsWith('dm.')?'relay_dm_rpc':'relay_rpc'),{method:'POST',headers:{'Content-Type':'application/json',apikey:serviceKey,Authorization:`Bearer ${serviceKey}`},body:JSON.stringify({p_action:action,p_token:token||'',p_data:data})});}
+    try{response=await fetcher(url.replace(/\/$/,'')+'/rest/v1/rpc/'+(action.startsWith('messages.')?'relay_message_rpc':action.startsWith('dm.')?'relay_dm_rpc':'relay_rpc'),{method:'POST',headers:{'Content-Type':'application/json',apikey:serviceKey,Authorization:`Bearer ${serviceKey}`},body:JSON.stringify({p_action:action,p_token:token||'',p_data:data})});}
     catch{throw error('The database could not be reached. Please retry.','NETWORK',503);}
     if(!response.ok)throw error('Relay could not complete the database request.','DATABASE',503);
     const result=await response.json();
@@ -81,6 +83,14 @@ export function createHandler({rpc,allowedOrigins=['https://doublekingwasabi1819
       if(!op||typeof op!=='object'||Array.isArray(op)||typeof op.id!=='string'||!/^[\w.:-]{1,128}$/.test(op.id)||!OPERATIONS.has(op.type))throw error('Invalid board operation.');
       if(op.payload!==undefined&&(!op.payload||typeof op.payload!=='object'||Array.isArray(op.payload)))throw error('Invalid operation payload.');
       const operation={id:op.id,type:op.type,payload:op.payload||{}};
+      if(operation.type==='message.add'){
+        // Use one SQL transaction for history + projection + intended outbox.
+        // Retrying this exact operation is safe after a lost response.
+        for(let attempt=0;attempt<5;attempt++){
+          try{return send(await rpc('messages.composer.send',token,{op:operation}));}
+          catch(err){if(err.code!=='NETWORK'||attempt===4)throw err;}
+        }
+      }
       for(let attempt=0;attempt<5;attempt++){
         const context=await rpc('context',token,{});
         if(operation.type.startsWith('task.')&&context.capabilities?.taskLifecycleV1!==true)throw error('Task controls are not ready. Please try again after the backend update.','BACKEND_NOT_READY',503);
