@@ -36,7 +36,7 @@ function database({loseAcknowledgement=false}={}) {
     if(action==='setup')return {token:'manager-token',expiresAt:new Date(Date.now()+60000).toISOString()};
     const session=sessions[token];
     if(!session)fail('Sign in again.','SESSION');
-    if(action==='context')return {...structuredClone(session),state:structuredClone(state),room:{accountId:session.user.id,body:'Private room',version:0}};
+    if(action==='context')return {capabilities:{taskLifecycleV1:true},...structuredClone(session),state:structuredClone(state),room:{accountId:session.user.id,body:'Private room',version:0}};
     if(action==='board.commit'){
       if(state.revision!==data.expectedRevision)fail('Someone saved first.','CONFLICT');
       state=structuredClone(data.state);writes++;

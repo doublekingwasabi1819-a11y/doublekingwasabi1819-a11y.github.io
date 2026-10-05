@@ -3,9 +3,9 @@ import {emptyState,applyOperation,HubError} from '../engine.mjs';
 const PUBLIC_ACTIONS=new Set(['status','setup','login','recovery.reset']);
 const MANAGER_ACTIONS=new Set(['workers.create','workers.update','workers.reset','workers.delete','password.change','recovery.rotate','workspace.delete']);
 const ACTIONS=new Set([...PUBLIC_ACTIONS,...MANAGER_ACTIONS,'logout','context','room.read','room.save','operation','dm.inbox','dm.thread','dm.send','dm.read']);
-const OPERATIONS=new Set(['project.update','agent.session','agent.checkpoint','task.add','task.claim','task.release','task.progress','task.review','message.add','request.add','request.resolve','memory.save','build.add']);
-const MANAGER_OPERATIONS=new Set(['project.update','agent.session','task.release','request.resolve','memory.save']);
-const STATUS={UNAUTHORIZED:401,SESSION:401,STALE_SESSION:401,FORBIDDEN:403,NOT_FOUND:404,CONFLICT:409,CLAIMED:409,DELETED:410,RATE_LIMIT:429,NETWORK:503};
+const OPERATIONS=new Set(['project.update','agent.session','agent.checkpoint','task.add','task.assign','task.edit','task.delete','task.restore','task.claim','task.release','task.progress','task.review','message.add','request.add','request.resolve','memory.save','build.add']);
+const MANAGER_OPERATIONS=new Set(['project.update','agent.session','task.release','task.assign','task.edit','task.delete','task.restore','request.resolve','memory.save']);
+const STATUS={UNAUTHORIZED:401,SESSION:401,STALE_SESSION:401,FORBIDDEN:403,NOT_FOUND:404,CONFLICT:409,CLAIMED:409,TASK_DELETED:409,DELETED:410,RATE_LIMIT:429,NETWORK:503};
 const allowedFields={
   status:[],setup:['setupCode','name','username','password'],login:['role','username','password'],
   'recovery.reset':['username','recoveryCode','newPassword'],logout:[],context:[],
@@ -75,7 +75,7 @@ export function createHandler({rpc,allowedOrigins=['https://doublekingwasabi1819
       // Account throttles are always enforced in SQL; this adds a coarse bucket
       // from the gateway's connection header without storing raw IP addresses.
       if(['setup','login','recovery.reset'].includes(action))data.rateKey=await sha((request.headers.get('x-forwarded-for')||'unknown').split(',').at(-1).trim());
-      if(action==='context'){const context=await rpc('context',token,data);context.notifications=await rpc('dm.notifications',token,{});return send(context);}
+      if(action==='context'){const context=await rpc('context',token,data);context.notifications=await rpc('dm.notifications',token,{});context.capabilities={taskControlsV1:context.capabilities?.taskLifecycleV1===true};return send(context);}
       if(action!=='operation')return send(await rpc(action,token,data));
       const op=data.op;
       if(!op||typeof op!=='object'||Array.isArray(op)||typeof op.id!=='string'||!/^[\w.:-]{1,128}$/.test(op.id)||!OPERATIONS.has(op.type))throw error('Invalid board operation.');
@@ -83,6 +83,7 @@ export function createHandler({rpc,allowedOrigins=['https://doublekingwasabi1819
       const operation={id:op.id,type:op.type,payload:op.payload||{}};
       for(let attempt=0;attempt<5;attempt++){
         const context=await rpc('context',token,{});
+        if(operation.type.startsWith('task.')&&context.capabilities?.taskLifecycleV1!==true)throw error('Task controls are not ready. Please try again after the backend update.','BACKEND_NOT_READY',503);
         if(MANAGER_OPERATIONS.has(operation.type)&&context.user?.role!=='manager')throw error('Only the manager can do this.','FORBIDDEN',403);
         const next=applyOperation(context.state,operation,context.actor);
         if(next===context.state)return send({state:context.state});

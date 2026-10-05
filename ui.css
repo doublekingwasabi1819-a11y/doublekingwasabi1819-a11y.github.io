@@ -382,3 +382,22 @@ footer .text-button { font-size: 11px; }
 .nav-disclosure:hover { background: #ffffff65; color: var(--text); }
 .nav-group-heading.has-active-child > .nav-disclosure { color: var(--blue); }
 @media (max-width: 760px) { .nav-disclosure { flex-basis: 44px; } }
+
+
+/* Task controls: names remain readable on narrow screens. */
+.task-assignees { border:0; padding:0; min-width:0; }
+.task-assignees .check-row { align-items:flex-start; overflow-wrap:anywhere; }
+.task-assignees input { flex:0 0 auto; margin-top:3px; }
+.task-assignees .checkbox-list { max-height:240px; overflow:auto; }
+.task-avatars { display:flex; flex-wrap:wrap; gap:3px; flex-shrink:0; }
+.task-avatars .avatar { width:26px; height:26px; font-size:10px; }
+.task-card .card-footer { gap:8px; align-items:flex-start; flex-wrap:wrap; }
+.task-card .card-footer>span:first-child, .task-meta, .pill-line .badge { overflow-wrap:anywhere; min-width:0; white-space:normal; }
+.task-management { margin-top:24px; border-top:1px solid var(--line); padding-top:18px; flex-wrap:wrap; }
+.deleted-task-row { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:16px 0; border-bottom:1px solid var(--line); }
+.deleted-task-row>div { flex:1 1 180px; min-width:0; overflow-wrap:anywhere; }
+@media(max-width:600px) { .task-right .task-avatars { display:none; } .task-management .button { flex:1 1 auto; } }
+/* Manager identity: keep the monogram and full name in the same typeface. */
+.project-switch > div { min-width: 0; flex: 1; }
+.project-switch .project-icon { flex: 0 0 34px; font-family: inherit; font-weight: 650; }
+.project-switch #project-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; font-weight: 650; }
