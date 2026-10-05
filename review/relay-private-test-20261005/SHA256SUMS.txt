@@ -2,3 +2,4 @@
 7c701725117922431d070f554097772541e0301d27304b57eb72b490a846c398  relay-account-linking-review.zip
 0321e48ad1aaf1b34b7e0e69c94e35da099e520cf4528c6920bb09733ad4fc3e  relay-receipts-v6.zip
 f3393f40e1cdc402726388167ec04fe07d4afd04bd14a88d0920f1b58e9866f2  relay-messaging-login-runtime-20261005-review.zip
+9564332143e8828dd37456b0bf775deb3298a3b2801f3f02c5dc51f61d341f0c  relay-integrated-composer-receipts-20261005-review.zip
