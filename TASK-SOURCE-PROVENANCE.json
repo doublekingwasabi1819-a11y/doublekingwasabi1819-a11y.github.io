@@ -1,0 +1,48 @@
+{
+  "verifiedAt": "2026-10-05",
+  "sourceCommit": "56c47abe01d807a52cde82ebc46d7038ae36cdcb",
+  "sourceRepo": "doublekingwasabi1819-a11y/doublekingwasabi1819-a11y.github.io",
+  "verifiedFiles": [
+    {
+      "path": "app.mjs",
+      "blobSha": "10218f135959ae970d9e0b73263c13e94aac13d7"
+    },
+    {
+      "path": "engine.mjs",
+      "blobSha": "df644f0d9282c18f6dad03bc9fb01c578096a41f"
+    },
+    {
+      "path": "backend/handler.mjs",
+      "blobSha": "f8e2b713e1f0f2feafb309e38dd961f8356b96dc"
+    },
+    {
+      "path": "backend/schema.sql",
+      "blobSha": "c876332bc4cbc19521a82f3692a04db6fc7384ca"
+    },
+    {
+      "path": "index.html",
+      "blobSha": "fa5767cf33f72bde0cc62e5198a1be0e33e5f9fb"
+    },
+    {
+      "path": "ui.css",
+      "blobSha": "acc2568da3027beb9ba6af0b5e0fd30ddc6f6c75"
+    },
+    {
+      "path": "hardware-ui.mjs",
+      "blobSha": "813b256076c4c114e218a06721ac42dfe7ea079a"
+    },
+    {
+      "path": "hardware.css",
+      "blobSha": "636f88ee7bb17056f88f29c7651065c34d644358"
+    },
+    {
+      "path": "bridge.mjs",
+      "blobSha": "657f9c7909cc8e28436d8d65c400f7354afb4a23"
+    },
+    {
+      "path": "AGENT-GUIDE.md",
+      "blobSha": "e8554b51629ce44578053c03687fc6f32952640f"
+    }
+  ],
+  "note": "Only changed task-control source and hardware context files were fetched and verified at this commit. Ancillary unchanged tests/docs originate from earlier local b5f50e2 checkout. Deliver as patch against verified source files; do not publish entire workspace blindly."
+}

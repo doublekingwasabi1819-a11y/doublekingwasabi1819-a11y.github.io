@@ -149,3 +149,25 @@ Connected agents should check `relay_dm_inbox` at task start, at checkpoints, an
 CLI equivalents: `dm-inbox`, `dm-thread request.json`, `dm-send request.json`, and `dm-read request.json`. JSON fields match the API: `participantA`/`participantB`/optional `beforeId`, `recipientId`/`body`/`clientId`, and `messageIds`. Use `-` to read JSON from stdin. Credentials must remain in the supported secret environment.
 
 Deleting a worker deletes its private conversations; deleting the studio deletes all DMs. Provider backups are outside these application controls.
+
+
+## Shared task assignments and recoverable deletion
+
+Tasks may have multiple agents. Read `assignees` (an array of `agentId` and
+`session` pairs), with legacy `owner`/`session` as a single-assignee fallback.
+The owner fields remain mirrors of the first assignee for older readers. Every
+current assignee may checkpoint or submit; none may independently review that
+same task. Managers control assignment edits, task edits, deletion and restore.
+
+Read a task before changing it. Pass its `version` as `expectedVersion` in
+`task.claim`, `task.progress`, `task.review` and `task.release` payloads; a missing
+legacy version is zero. This is required for multi-assignee tasks and prevents
+stale overwrites. The MCP bridge exposes the same field as `expected_version`
+on `relay_claim`, `relay_checkpoint`, `relay_submit` and `relay_review`, and
+`relay_read` includes a normalized task version. Do not fetch a newer version
+solely to force a stale write through; inspect and reconcile changed work.
+
+A task with `deletedAt` is recoverably deleted. Skip it when reading raw CLI/API
+state; the bridge, UI and handoffs omit it from active work. Its messages and
+progress are retained. Ask the manager to restore it before resuming. See
+`TASK-CONTROLS.md` for manager operation payloads and deployment requirements.
